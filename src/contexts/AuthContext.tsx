@@ -97,15 +97,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loadUserData = useCallback(async (userId: string) => {
     try {
       const [profileData, perms] = await Promise.all([
-        withTimeout(getProfile(userId), 8000, null),
-        withTimeout(loadPermissions(userId), 8000, []),
+        withTimeout(getProfile(userId), 15000, null),
+        withTimeout(loadPermissions(userId), 15000, []),
       ]);
-      setProfile(profileData);
-      setPermissions(perms);
+      // Only update profile if we got data — keep existing profile on timeout
+      if (profileData) {
+        setProfile(profileData);
+        setPermissions(perms);
+      }
     } catch (err) {
       console.error('loadUserData error:', err);
-      setProfile(null);
-      setPermissions([]);
+      // Don't reset profile on error — keep the existing one
     }
   }, []);
 

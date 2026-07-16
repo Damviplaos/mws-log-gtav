@@ -43,7 +43,7 @@ Deno.serve(async (req: Request) => {
 
     const callerTeamId = callerProfile?.team_id ?? null;
 
-    const { action, channel_id, is_op, target_user_id } = await req.json();
+    const { action, channel_id, is_op, target_user_id, partner_user_id } = await req.json();
 
     if (action === 'join') {
       // Get default "ready" channel — filtered by team
@@ -465,7 +465,6 @@ Deno.serve(async (req: Request) => {
 
     // ── Pairing actions ──────────────────────────────────────────────
     if (action === 'pair_users') {
-      const { partner_user_id } = body;
       if (!partner_user_id) {
         return new Response(JSON.stringify({ error: 'ต้องระบุ partner_user_id' }), {
           status: 400,
@@ -515,7 +514,8 @@ Deno.serve(async (req: Request) => {
         });
       }
 
-      const { target_user_id: targetId, partner_user_id: partnerId } = body;
+      const targetId = target_user_id;
+      const partnerId = partner_user_id;
       if (!targetId || !partnerId) {
         return new Response(JSON.stringify({ error: 'ต้องระบุ target_user_id และ partner_user_id' }), {
           status: 400,

@@ -33,6 +33,8 @@ export async function joinPresence(channelId?: string) {
 
   if (existing) {
     // User already online — just update heartbeat, don't move them
+    // Also save their current channel so refresh puts them back here
+    saveLastChannelId(existing.channel_id);
     await supabase
       .from('user_presence')
       .update({ last_heartbeat: new Date().toISOString() })
@@ -444,6 +446,11 @@ export async function setOPStatusForUser(targetUserId: string, isOp: boolean) {
         started_at: new Date().toISOString(),
         is_op_time: isOp,
       });
+    }
+    // If this is the current user, save channel so refresh preserves position
+    const { data: { user: currentUser } } = await supabase.auth.getUser();
+    if (currentUser && currentUser.id === targetUserId) {
+      saveLastChannelId(newChannelId);
     }
   }
 }

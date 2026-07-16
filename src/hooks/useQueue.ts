@@ -14,6 +14,7 @@ import {
   advanceQueuePointer,
   randomSelectOP,
   getLastChannelId,
+  saveLastChannelId,
   pairUsers,
   cancelPair,
 } from '@/services/presenceService';
@@ -130,11 +131,21 @@ export function useQueue() {
     if (!myPresence) return;
     try {
       await setOPStatus(!myPresence.is_op);
+      // Save channel ID so refresh puts us back in the right room
+      if (!myPresence.is_op) {
+        // Becoming OP — find the OP channel
+        const opChannel = channels.find(c => c.name === 'op');
+        if (opChannel) saveLastChannelId(opChannel.id);
+      } else {
+        // Leaving OP — go back to ready
+        const readyCh = channels.find(c => c.name === 'ready');
+        if (readyCh) saveLastChannelId(readyCh.id);
+      }
     } catch (err) {
       toast.error('เปลี่ยนสถานะ OP ไม่สำเร็จ');
       console.error(err);
     }
-  }, [myPresence]);
+  }, [myPresence, channels]);
 
   const handleNextPointer = useCallback(async () => {
     if (!myPresence?.is_op) return;
