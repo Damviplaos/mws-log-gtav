@@ -106,14 +106,15 @@ interface UserRowProps {
   onMoveUser?: (targetUserId: string, channelId: string) => void;
   onToggleOPUser?: (targetUserId: string, isOp: boolean) => void;
   onAdminPair?: (targetUserId: string) => void;
-  isAdmin?: boolean;
+  canMoveOthers?: boolean;
+  canToggleOPOthers?: boolean;
   canPairOthers?: boolean;
 }
 
 function UserRow({
   presence, isPointed, isMe, channels, allPresences,
   myPairUserId, onSwitchChannel, onStartPairing, onCancelPair,
-  onMoveUser, onToggleOPUser, onAdminPair, isAdmin, canPairOthers,
+  onMoveUser, onToggleOPUser, onAdminPair, canMoveOthers, canToggleOPOthers, canPairOthers,
 }: UserRowProps) {
   const displayName = presence.profile?.nickname || presence.profile?.ic_name || presence.profile?.username || '?';
   // Check pairing from DB-backed paired_with_user_id
@@ -187,7 +188,7 @@ function UserRow({
       )}
 
       {/* Admin controls for OTHER users */}
-      {!isMe && isAdmin && onMoveUser && onToggleOPUser && (
+      {!isMe && (canMoveOthers || canToggleOPOthers || canPairOthers) && onMoveUser && onToggleOPUser && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button className="flex items-center gap-0.5 text-xs text-muted-foreground hover:text-warning px-1.5 py-0.5 rounded border border-transparent hover:border-warning/30 transition-colors shrink-0 opacity-0 group-hover:opacity-100">
@@ -195,23 +196,29 @@ function UserRow({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
-            <p className="px-2 py-1 text-[10px] text-muted-foreground font-semibold uppercase">ย้ายห้อง</p>
-            {channels.map(ch => (
-              <DropdownMenuItem
-                key={ch.id}
-                onClick={() => onMoveUser(presence.user_id, ch.id)}
-                disabled={ch.id === presence.channel_id}
-                className={ch.id === presence.channel_id ? 'opacity-50' : ''}
-              >
-                <ArrowLeftRight className="w-3 h-3 mr-2" />
-                {ch.id === presence.channel_id ? '✓ ' : ''}{ch.display_name}
+            {canMoveOthers && (
+              <>
+                <p className="px-2 py-1 text-[10px] text-muted-foreground font-semibold uppercase">ย้ายห้อง</p>
+                {channels.map(ch => (
+                  <DropdownMenuItem
+                    key={ch.id}
+                    onClick={() => onMoveUser(presence.user_id, ch.id)}
+                    disabled={ch.id === presence.channel_id}
+                    className={ch.id === presence.channel_id ? 'opacity-50' : ''}
+                  >
+                    <ArrowLeftRight className="w-3 h-3 mr-2" />
+                    {ch.id === presence.channel_id ? '✓ ' : ''}{ch.display_name}
+                  </DropdownMenuItem>
+                ))}
+              </>
+            )}
+            {canMoveOthers && canToggleOPOthers && <DropdownMenuSeparator />}
+            {canToggleOPOthers && (
+              <DropdownMenuItem onClick={() => onToggleOPUser(presence.user_id, !presence.is_op)}>
+                <Star className="w-3 h-3 mr-2" />
+                {presence.is_op ? 'เลิกเป็น OP ให้' : 'ตั้งเป็น OP ให้'}
               </DropdownMenuItem>
-            ))}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => onToggleOPUser(presence.user_id, !presence.is_op)}>
-              <Star className="w-3 h-3 mr-2" />
-              {presence.is_op ? 'เลิกเป็น OP ให้' : 'ตั้งเป็น OP ให้'}
-            </DropdownMenuItem>
+            )}
             {canPairOthers && onAdminPair && (
               <>
                 <DropdownMenuSeparator />
@@ -300,14 +307,15 @@ interface ChannelSectionProps {
   onMoveUser?: (targetUserId: string, channelId: string) => void;
   onToggleOPUser?: (targetUserId: string, isOp: boolean) => void;
   onAdminPair?: (targetUserId: string) => void;
-  isAdmin?: boolean;
+  canMoveOthers?: boolean;
+  canToggleOPOthers?: boolean;
   canPairOthers?: boolean;
 }
 
 function ChannelSection({
   channel, presences, pointedUserId, myUserId, isReadyChannel, channels, allPresences,
   myPairUserId, onSwitchChannel, onStartPairing, onCancelPair,
-  onMoveUser, onToggleOPUser, onAdminPair, isAdmin, canPairOthers,
+  onMoveUser, onToggleOPUser, onAdminPair, canMoveOthers, canToggleOPOthers, canPairOthers,
 }: ChannelSectionProps) {
   const myPresenceHere = presences.find(p => p.user_id === myUserId);
   const partnerHere = myPairUserId ? presences.find(p => p.user_id === myPairUserId) : null;
@@ -355,7 +363,8 @@ function ChannelSection({
           onMoveUser={onMoveUser}
           onToggleOPUser={onToggleOPUser}
           onAdminPair={onAdminPair}
-          isAdmin={isAdmin}
+          canMoveOthers={canMoveOthers}
+          canToggleOPOthers={canToggleOPOthers}
           canPairOthers={canPairOthers}
         />
       );
@@ -519,8 +528,9 @@ export default function QueuePage() {
     toast.info('ยกเลิกการจับคู่แล้ว');
   };
 
-  // ── Admin: move other users / toggle OP / pair others ──────────────────────
-  const isAdm = profile?.system_role === 'super_admin' || profile?.system_role === 'admin' || hasPermission('move_player');
+  // ── Per-action permissions (super_admin/admin always get everything) ─────
+  const canMoveOthers = hasPermission('move_player');
+  const canToggleOPOthers = hasPermission('set_op_others');
   const canPairOthers = hasPermission('admin_pair_others');
 
   const handleMoveUser = useCallback(async (targetUserId: string, channelId: string) => {
@@ -652,7 +662,8 @@ export default function QueuePage() {
                 setAdminPairTarget(targetId);
                 setAdminPairPartnerPickerOpen(true);
               }}
-              isAdmin={isAdm}
+              canMoveOthers={canMoveOthers}
+              canToggleOPOthers={canToggleOPOthers}
               canPairOthers={canPairOthers}
             />
           ))}
