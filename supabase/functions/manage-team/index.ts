@@ -140,26 +140,29 @@ serve(async (req: Request) => {
       const fromChannelId = currentPresence?.channel_id ?? null;
 
       // Update or insert presence
+      const upsertData: Record<string, unknown> = {
+        user_id: target_user_id,
+        channel_id,
+        joined_channel_at: new Date().toISOString(),
+        session_started_at: new Date().toISOString(),
+      };
+      if (callerProfile.team_id) upsertData.team_id = callerProfile.team_id;
+
       const { error: upsertError } = await supabase
         .from('user_presence')
-        .upsert({
-          user_id: target_user_id,
-          channel_id,
-          joined_channel_at: new Date().toISOString(),
-          session_started_at: new Date().toISOString(),
-        }, { onConflict: 'user_id' });
+        .upsert(upsertData, { onConflict: 'user_id' });
 
       if (upsertError) throw upsertError;
 
       // Log the move
-      await supabase
-        .from('presence_logs')
-        .insert({
-          user_id: target_user_id,
-          from_channel_id: fromChannelId,
-          to_channel_id: channel_id,
-          changed_at: new Date().toISOString(),
-        });
+      const logData: Record<string, unknown> = {
+        user_id: target_user_id,
+        from_channel_id: fromChannelId,
+        to_channel_id: channel_id,
+        changed_at: new Date().toISOString(),
+      };
+      if (callerProfile.team_id) logData.team_id = callerProfile.team_id;
+      await supabase.from('presence_logs').insert(logData);
 
       return new Response(JSON.stringify({ success: true }), {
         status: 200,

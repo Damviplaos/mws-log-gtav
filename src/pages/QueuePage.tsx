@@ -123,7 +123,7 @@ function UserRow({
 
   return (
     <div className={`flex items-center gap-2 px-3 py-1.5 rounded-sm group transition-colors
-      ${isMe ? 'bg-primary/5' : isMyPartner ? 'bg-accent/10 border-l-2 border-accent' : 'hover:bg-muted/50'}
+      ${isMe ? 'bg-primary/5' : isMyPartner ? 'bg-muted/30 border-l-2 border-foreground/40' : 'hover:bg-muted/50'}
     `}>
       <span className="online-dot-static" />
       <span className={`w-4 text-center text-sm transition-opacity ${isPointed ? 'opacity-100' : 'opacity-0'}`}>
@@ -133,12 +133,12 @@ function UserRow({
         <Star className="w-3.5 h-3.5 text-warning fill-warning shrink-0" />
       )}
       {isMyPartner && (
-        <UserCheck className="w-3.5 h-3.5 text-accent shrink-0" />
+        <UserCheck className="w-3.5 h-3.5 text-foreground shrink-0" />
       )}
-      <span className={`flex-1 min-w-0 text-sm ${isMe ? 'text-primary font-semibold' : isMyPartner ? 'text-accent font-semibold' : 'text-foreground'} truncate`}>
+      <span className={`flex-1 min-w-0 text-sm ${isMe ? 'text-primary font-semibold' : isMyPartner ? 'text-foreground font-semibold' : 'text-foreground'} truncate`}>
         {displayName}
         {isMe && <span className="ml-1 text-xs text-muted-foreground">(คุณ)</span>}
-        {isMyPartner && <span className="ml-1 text-xs text-accent/70">[คู่ของคุณ]</span>}
+        {isMyPartner && <span className="ml-1 text-xs text-muted-foreground">[คู่ของคุณ]</span>}
       </span>
       <UserRolesBadges userId={presence.user_id} />
       {presence.profile?.ic_name && presence.profile.ic_name !== displayName && (
@@ -243,15 +243,15 @@ function PairedRow({
   const name = (p: PresenceWithProfile) =>
     p.profile?.nickname || p.profile?.ic_name || p.profile?.username || '?';
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 rounded-sm bg-accent/10 border-l-2 border-accent group">
+    <div className="flex items-center gap-2 px-3 py-1.5 rounded-sm bg-muted/30 border-l-2 border-foreground/40 group">
       <span className="online-dot-static" />
       <span className={`w-4 text-center text-sm transition-opacity ${isPointed ? 'opacity-100' : 'opacity-0'}`}>
         👉
       </span>
-      <UserCheck className="w-3.5 h-3.5 text-accent shrink-0" />
-      <span className="flex-1 min-w-0 text-sm text-accent font-semibold truncate">
-        {name(me)}<span className="text-accent/60 font-bold mx-1">+</span>{name(partner)}
-        <span className="ml-1.5 text-xs text-accent/70 font-normal">[จับคู่]</span>
+      <UserCheck className="w-3.5 h-3.5 text-foreground shrink-0" />
+      <span className="flex-1 min-w-0 text-sm text-foreground font-semibold truncate">
+        {name(me)}<span className="text-muted-foreground font-bold mx-1">+</span>{name(partner)}
+        <span className="ml-1.5 text-xs text-muted-foreground font-normal">[จับคู่]</span>
       </span>
       {/* Self menu */}
       <DropdownMenu>
@@ -601,10 +601,10 @@ export default function QueuePage() {
 
       {/* Active pair banner */}
       {myPairUserId && partnerPresence && (
-        <div className="flex items-center justify-between gap-3 mb-3 px-3 py-2 rounded-sm border border-accent/40 bg-accent/10">
+        <div className="flex items-center justify-between gap-3 mb-3 px-3 py-2 rounded-sm border border-foreground/20 bg-muted/30">
           <div className="flex items-center gap-2">
-            <UserCheck className="w-4 h-4 text-accent shrink-0" />
-            <span className="text-sm text-accent font-semibold">
+            <UserCheck className="w-4 h-4 text-foreground shrink-0" />
+            <span className="text-sm text-foreground font-semibold">
               จับคู่กับ: {partnerPresence.profile?.nickname || partnerPresence.profile?.username}
             </span>
             {partnerPresence.channel?.display_name && (

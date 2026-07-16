@@ -34,17 +34,27 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    // Fetch caller's profile (including team_id) once for all actions
+    const { data: callerProfile } = await supabaseAdmin
+      .from('profiles')
+      .select('system_role, team_id')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    const callerTeamId = callerProfile?.team_id ?? null;
+
     const { action, channel_id, is_op, target_user_id } = await req.json();
 
     if (action === 'join') {
-      // Get default "ready" channel
+      // Get default "ready" channel — filtered by team
       let targetChannelId = channel_id;
       if (!targetChannelId) {
-        const { data: readyCh } = await supabaseAdmin
+        let readyQuery = supabaseAdmin
           .from('channels')
           .select('id')
-          .eq('name', 'ready')
-          .maybeSingle();
+          .eq('name', 'ready');
+        if (callerTeamId) readyQuery = readyQuery.eq('team_id', callerTeamId);
+        const { data: readyCh } = await readyQuery.maybeSingle();
         targetChannelId = readyCh?.id;
       }
 
@@ -74,17 +84,20 @@ Deno.serve(async (req: Request) => {
           .eq('user_id', user.id);
       }
 
-      // Insert new presence — always join with is_op=false
+      // Insert new presence — always join with is_op=false, include team_id
+      const insertData: Record<string, unknown> = {
+        user_id: user.id,
+        channel_id: targetChannelId,
+        joined_channel_at: new Date().toISOString(),
+        session_started_at: new Date().toISOString(),
+        last_heartbeat: new Date().toISOString(),
+        is_op: false,
+      };
+      if (callerTeamId) insertData.team_id = callerTeamId;
+
       const { data: newPresence, error: presenceError } = await supabaseAdmin
         .from('user_presence')
-        .insert({
-          user_id: user.id,
-          channel_id: targetChannelId,
-          joined_channel_at: new Date().toISOString(),
-          session_started_at: new Date().toISOString(),
-          last_heartbeat: new Date().toISOString(),
-          is_op: false,
-        })
+        .insert(insertData)
         .select()
         .maybeSingle();
 
@@ -95,14 +108,16 @@ Deno.serve(async (req: Request) => {
         });
       }
 
-      // Log channel change
+      // Log channel change with team_id
       if (previousChannelId !== targetChannelId) {
-        await supabaseAdmin.from('presence_logs').insert({
+        const logData: Record<string, unknown> = {
           user_id: user.id,
           from_channel_id: previousChannelId,
           to_channel_id: targetChannelId,
           changed_at: new Date().toISOString(),
-        });
+        };
+        if (callerTeamId) logData.team_id = callerTeamId;
+        await supabaseAdmin.from('presence_logs').insert(logData);
       }
 
       // Start time log if channel tracks time
@@ -113,12 +128,14 @@ Deno.serve(async (req: Request) => {
         .maybeSingle();
 
       if (ch?.track_time) {
-        await supabaseAdmin.from('time_logs').insert({
+        const timeLogData: Record<string, unknown> = {
           user_id: user.id,
           channel_id: targetChannelId,
           started_at: new Date().toISOString(),
           is_op_time: false,
-        });
+        };
+        if (callerTeamId) timeLogData.team_id = callerTeamId;
+        await supabaseAdmin.from('time_logs').insert(timeLogData);
       }
 
       return new Response(JSON.stringify({ success: true, presence: newPresence }), {
@@ -135,11 +152,12 @@ Deno.serve(async (req: Request) => {
         .is('ended_at', null);
 
       // If was pointer, advance pointer
-      const { data: pointer } = await supabaseAdmin
+      let pointerQuery = supabaseAdmin
         .from('queue_pointer')
         .select('pointed_user_id')
-        .eq('id', '00000000-0000-0000-0000-000000000001')
-        .maybeSingle();
+        .eq('id', '00000000-0000-0000-0000-000000000001');
+      if (callerTeamId) pointerQuery = pointerQuery.eq('team_id', callerTeamId);
+      const { data: pointer } = await pointerQuery.maybeSingle();
 
       await supabaseAdmin
         .from('user_presence')
@@ -148,8 +166,10 @@ Deno.serve(async (req: Request) => {
 
       // Advance pointer if needed
       if (pointer?.pointed_user_id === user.id) {
-        const { data: readyCh } = await supabaseAdmin
-          .from('channels').select('id').eq('name', 'ready').maybeSingle();
+        let readyQuery = supabaseAdmin
+          .from('channels').select('id').eq('name', 'ready');
+        if (callerTeamId) readyQuery = readyQuery.eq('team_id', callerTeamId);
+        const { data: readyCh } = await readyQuery.maybeSingle();
         if (readyCh) {
           const { data: queue } = await supabaseAdmin
             .from('user_presence')
@@ -223,12 +243,14 @@ Deno.serve(async (req: Request) => {
         .maybeSingle();
 
       if (ch?.track_time) {
-        await supabaseAdmin.from('time_logs').insert({
+        const timeLogData: Record<string, unknown> = {
           user_id: user.id,
           channel_id: presence.channel_id,
           started_at: new Date().toISOString(),
           is_op_time: is_op,
-        });
+        };
+        if (callerTeamId) timeLogData.team_id = callerTeamId;
+        await supabaseAdmin.from('time_logs').insert(timeLogData);
       }
 
       return new Response(JSON.stringify({ success: true }), {
@@ -237,14 +259,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === 'move_user') {
-      // Admin moves another user to a different channel
-      const callerProfile = await supabaseAdmin
-        .from('profiles')
-        .select('system_role')
-        .eq('id', user.id)
-        .maybeSingle();
-
-      if (!callerProfile || !['super_admin', 'admin'].includes(callerProfile.data?.system_role)) {
+      if (!callerProfile || !['super_admin', 'admin'].includes(callerProfile.system_role)) {
         return new Response(JSON.stringify({ error: 'ต้องการสิทธิ์แอดมิน' }), {
           status: 403,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -287,13 +302,15 @@ Deno.serve(async (req: Request) => {
         .update({ channel_id: channel_id, joined_channel_at: new Date().toISOString() })
         .eq('user_id', target_user_id);
 
-      // Log channel change
-      await supabaseAdmin.from('presence_logs').insert({
+      // Log channel change with team_id
+      const logData: Record<string, unknown> = {
         user_id: target_user_id,
         from_channel_id: prevChannelId,
         to_channel_id: channel_id,
         changed_at: new Date().toISOString(),
-      });
+      };
+      if (callerTeamId) logData.team_id = callerTeamId;
+      await supabaseAdmin.from('presence_logs').insert(logData);
 
       // Start time log if new channel tracks time
       const { data: ch } = await supabaseAdmin
@@ -303,12 +320,14 @@ Deno.serve(async (req: Request) => {
         .maybeSingle();
 
       if (ch?.track_time) {
-        await supabaseAdmin.from('time_logs').insert({
+        const timeLogData: Record<string, unknown> = {
           user_id: target_user_id,
           channel_id: channel_id,
           started_at: new Date().toISOString(),
           is_op_time: false,
-        });
+        };
+        if (callerTeamId) timeLogData.team_id = callerTeamId;
+        await supabaseAdmin.from('time_logs').insert(timeLogData);
       }
 
       return new Response(JSON.stringify({ success: true }), {
@@ -317,14 +336,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === 'set_op_others') {
-      // Admin toggles OP for another user
-      const callerProfile = await supabaseAdmin
-        .from('profiles')
-        .select('system_role')
-        .eq('id', user.id)
-        .maybeSingle();
-
-      if (!callerProfile || !['super_admin', 'admin'].includes(callerProfile.data?.system_role)) {
+      if (!callerProfile || !['super_admin', 'admin'].includes(callerProfile.system_role)) {
         return new Response(JSON.stringify({ error: 'ต้องการสิทธิ์แอดมิน' }), {
           status: 403,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -366,12 +378,14 @@ Deno.serve(async (req: Request) => {
           .maybeSingle();
 
         if (ch?.track_time) {
-          await supabaseAdmin.from('time_logs').insert({
+          const timeLogData: Record<string, unknown> = {
             user_id: target_user_id,
             channel_id: tp.channel_id,
             started_at: new Date().toISOString(),
             is_op_time: is_op,
-          });
+          };
+          if (callerTeamId) timeLogData.team_id = callerTeamId;
+          await supabaseAdmin.from('time_logs').insert(timeLogData);
         }
       }
 

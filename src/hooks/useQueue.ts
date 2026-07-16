@@ -84,7 +84,7 @@ export function useQueue() {
       .channel('queue-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'user_presence' }, () => fetchAll())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'queue_pointer' }, () => {
-        getQueuePointer().then(p => setPointer(p));
+        getQueuePointer(teamId).then(p => setPointer(p));
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => fetchAll())
       .subscribe();
