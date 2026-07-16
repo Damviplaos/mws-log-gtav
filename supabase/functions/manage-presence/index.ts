@@ -506,6 +506,39 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    // Admin pairs two OTHER users together (not self)
+    if (action === 'pair_users_admin') {
+      if (!callerProfile || !['super_admin', 'admin'].includes(callerProfile.system_role)) {
+        return new Response(JSON.stringify({ error: 'ต้องการสิทธิ์แอดมิน' }), {
+          status: 403,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      const { target_user_id: targetId, partner_user_id: partnerId } = body;
+      if (!targetId || !partnerId) {
+        return new Response(JSON.stringify({ error: 'ต้องระบุ target_user_id และ partner_user_id' }), {
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      const { error: pairErr } = await supabaseAdmin.rpc('pair_users', {
+        p_user_a: targetId,
+        p_user_b: partnerId,
+      });
+      if (pairErr) {
+        return new Response(JSON.stringify({ error: pairErr.message }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      return new Response(JSON.stringify({ success: true }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     return new Response(JSON.stringify({ error: 'ไม่รู้จัก action' }), {
       status: 400,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },

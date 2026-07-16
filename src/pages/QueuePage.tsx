@@ -14,7 +14,7 @@ import { toast } from 'sonner';
 import { ChevronRight, Shuffle, ArrowRight, Star, UserCheck, X, ArrowLeftRight, Shield } from 'lucide-react';
 import type { PresenceWithProfile, Channel } from '@/types/types';
 import { getUserRoles } from '@/services/adminService';
-import { moveUserToChannel, setOPStatusForUser } from '@/services/presenceService';
+import { moveUserToChannel, setOPStatusForUser, pairUsersAsAdmin } from '@/services/presenceService';
 import { useEffect, useState, useRef, useCallback } from 'react';
 import type { JSX } from 'react';
 import type { Role } from '@/types/types';
@@ -548,17 +548,18 @@ export default function QueuePage() {
 
   const handleAdminPair = useCallback(async (targetUserId: string, partnerUserId: string) => {
     try {
-      await handlePair(partnerUserId);
+      await pairUsersAsAdmin(targetUserId, partnerUserId);
       setAdminPairTarget(null);
       const partner = presenceList.find(p => p.user_id === partnerUserId);
       const target = presenceList.find(p => p.user_id === targetUserId);
       if (partner && target) {
         toast.success(`จับคู่ ${target.profile?.nickname || target.profile?.username} กับ ${partner.profile?.nickname || partner.profile?.username} สำเร็จ`);
       }
+      await fetchAll();
     } catch {
       toast.error('จับคู่ไม่สำเร็จ');
     }
-  }, [handlePair, presenceList]);
+  }, [presenceList, fetchAll]);
 
   if (loading) {
     return (

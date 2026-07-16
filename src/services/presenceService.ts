@@ -474,6 +474,26 @@ export async function pairUsers(partnerUserId: string) {
   if (error) throw error;
 }
 
+export async function pairUsersAsAdmin(targetUserId: string, partnerUserId: string) {
+  try {
+    const { data, error } = await supabase.functions.invoke('manage-presence', {
+      body: { action: 'pair_users_admin', target_user_id: targetUserId, partner_user_id: partnerUserId },
+      method: 'POST',
+    });
+    if (error) {
+      const msg = await error?.context?.text?.();
+      throw new Error(msg || error.message);
+    }
+    if (data?.error) throw new Error(data.error);
+    return;
+  } catch (_e) {
+    // Edge function not deployed — fall back to direct RPC
+  }
+
+  const { error } = await supabase.rpc('pair_users', { p_user_a: targetUserId, p_user_b: partnerUserId });
+  if (error) throw error;
+}
+
 export async function cancelPair() {
   try {
     const { data, error } = await supabase.functions.invoke('manage-presence', {

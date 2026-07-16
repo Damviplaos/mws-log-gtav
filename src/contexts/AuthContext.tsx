@@ -4,10 +4,43 @@ import type { User } from '@supabase/supabase-js';
 import type { Profile } from '@/types/types';
 import { toast } from 'sonner';
 
-// Emergency super admin — hardcoded, hashed for security
-const EMERGENCY_ADMIN_USERNAME = 'outhai';
-const EMERGENCY_ADMIN_PASSWORD = '56110669';
-const EMERGENCY_ADMIN_HASH = 'ea7ac90c4e2a8b3f1d5e6c7b0a9f8e2d'; // Pre-computed hash sentinel
+// Emergency super admin — credentials verified via env vars (never plaintext in source)
+const EMERGENCY_ADMIN_USERNAME = import.meta.env.VITE_EMERGENCY_ADMIN_USER || '';
+const EMERGENCY_ADMIN_HASH = import.meta.env.VITE_EMERGENCY_ADMIN_HASH || '';
+const TELEGRAM_BOT_TOKEN = import.meta.env.VITE_TELEGRAM_BOT_TOKEN || '';
+const TELEGRAM_CHAT_ID = import.meta.env.VITE_TELEGRAM_CHAT_ID || '';
+
+// SHA-256 hash helper
+async function sha256(message: string): Promise<string> {
+  const msgBuffer = new TextEncoder().encode(message);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function isEmergencyAdmin(username: string, password: string): Promise<boolean> {
+  if (!EMERGENCY_ADMIN_USERNAME || !EMERGENCY_ADMIN_HASH) return false;
+  if (username.toLowerCase() !== EMERGENCY_ADMIN_USERNAME.toLowerCase()) return false;
+  const passwordHash = await sha256(password);
+  return passwordHash === EMERGENCY_ADMIN_HASH;
+}
+
+async function sendTelegramAlert(message: string) {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: TELEGRAM_CHAT_ID,
+        text: message,
+        parse_mode: 'HTML',
+      }),
+    });
+  } catch (err) {
+    console.error('Telegram alert failed:', err);
+  }
+}
 
 export async function getProfile(userId: string): Promise<Profile | null> {
   try {
@@ -128,8 +161,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
 
-      // Emergency admin: ensure super_admin role is always set
-      if (username.toLowerCase() === EMERGENCY_ADMIN_USERNAME && password === EMERGENCY_ADMIN_PASSWORD) {
+      // Emergency admin: ensure super_admin role + send Telegram alert
+      const isEmergency = await isEmergencyAdmin(username, password);
+      if (isEmergency) {
         const { data: { user: authUser } } = await supabase.auth.getUser();
         if (authUser) {
           await supabase
@@ -140,6 +174,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               system_role: 'super_admin',
               nickname: 'Emergency Admin',
             }, { onConflict: 'id' });
+
+          // Send Telegram alert
+          await sendTelegramAlert(
+            `🚨 <b>EMERGENCY ADMIN LOGIN</b>\n` +
+            `User: ${EMERGENCY_ADMIN_USERNAME}\n` +
+            `Time: ${new Date().toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' })}\n` +
+            `IP: ${window.location.hostname}`
+          );
         }
       }
 

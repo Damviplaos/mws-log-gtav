@@ -10,6 +10,7 @@ import {
   sendHeartbeat,
   switchChannel,
   setOPStatus,
+  setOPStatusForUser,
   advanceQueuePointer,
   randomSelectOP,
   getLastChannelId,
@@ -156,10 +157,8 @@ export function useQueue() {
         toast.error('ไม่มีคนในห้องพร้อมทำงาน');
         return;
       }
-      await supabase
-        .from('user_presence')
-        .update({ is_op: true })
-        .eq('user_id', userId);
+      // Use setOPStatusForUser to properly move user to OP room
+      await setOPStatusForUser(userId, true);
     } catch (err) {
       toast.error('สุ่ม OP ไม่สำเร็จ');
       console.error(err);
