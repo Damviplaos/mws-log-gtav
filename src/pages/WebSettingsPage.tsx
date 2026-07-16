@@ -142,7 +142,7 @@ export default function WebSettingsPage() {
           <div className="space-y-2 text-xs text-muted-foreground">
             <p>ระบบจะรีเซ็ตสถิติเวลาออนไลน์ของสมาชิกทุกคนโดยอัตโนมัติ</p>
             <ul className="list-disc pl-4 space-y-1">
-              <li>รีเซ็ตทุกวัน<span className="text-foreground font-medium">จันทร์เที่ยงคืน (00:00 UTC)</span></li>
+              <li>รีเซ็ตทุกวัน<span className="text-foreground font-medium">จันทร์เที่ยงคืน (00:00 เวลไทย GMT+7)</span></li>
               <li>ระบบจะสำรองข้อมูลสถิติไว้<span className="text-foreground font-medium">ย้อนหลัง 2 สัปดาห์</span></li>
               <li>ข้อมูลเก่ากว่า 2 สัปดาห์จะถูกลบออกจากระบบโดยอัตโนมัติ</li>
             </ul>

@@ -399,7 +399,7 @@ export default function DashboardPage() {
                       : 'ยินดีด้วย! คุณผ่านเกณฑ์แล้ว'}
                   </p>
                   <p className="text-xs text-success/80 mt-0.5">
-                    กรุณาติดต่อยศสูงกว่าเพื่อขอเลื่อนยศ
+                    กรุณาติดต่อยศใหญ่เพื่อขอสอบ
                   </p>
                 </div>
               </div>
@@ -456,7 +456,7 @@ export default function DashboardPage() {
             )}
 
             <p className="text-[10px] text-muted-foreground italic">
-              * รีเซ็ตทุกวันจันทร์ เวลา 00:00 UTC
+              * รีเซ็ตทุกวันจันทร์ เวลา 00:00 (เวลาไทย GMT+7)
             </p>
           </CardContent>
         </Card>

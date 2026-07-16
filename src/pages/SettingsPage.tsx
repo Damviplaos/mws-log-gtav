@@ -51,6 +51,8 @@ export default function SettingsPage() {
   const [loadingProfiles, setLoadingProfiles] = useState(false);
   const [deleteTimeLogsUser, setDeleteTimeLogsUser] = useState<Profile | null>(null);
   const [deletingLogs, setDeletingLogs] = useState(false);
+  const [resetAllConfirm, setResetAllConfirm] = useState(false);
+  const [resettingAll, setResettingAll] = useState(false);
 
   const loadChannels = useCallback(async () => {
     if (!isAdmin) return;
@@ -149,6 +151,21 @@ export default function SettingsPage() {
       toast.error('ลบข้อมูลเวลาไม่สำเร็จ');
     } finally {
       setDeletingLogs(false);
+    }
+  };
+
+  const handleResetAllTimeLogs = async () => {
+    setResettingAll(true);
+    try {
+      for (const p of allProfiles) {
+        await deleteUserTimeLogs(p.id);
+      }
+      toast.success('ล้างข้อมูลเวลาทั้งหมดสำเร็จ');
+      setResetAllConfirm(false);
+    } catch {
+      toast.error('ล้างข้อมูลเวลาไม่สำเร็จ');
+    } finally {
+      setResettingAll(false);
     }
   };
 
@@ -514,6 +531,14 @@ export default function SettingsPage() {
                 ))}
               </div>
             )}
+            <Separator className="my-2" />
+            <Button
+              variant="destructive" size="sm" className="w-full"
+              disabled={resettingAll}
+              onClick={() => setResetAllConfirm(true)}
+            >
+              {resettingAll ? 'กำลังล้าง...' : 'ล้างข้อมูลเวลาทั้งหมด'}
+            </Button>
           </CardContent>
         </Card>
       )}
@@ -532,6 +557,25 @@ export default function SettingsPage() {
             <AlertDialogAction onClick={handleDeleteTimeLogs} disabled={deletingLogs}
               className="bg-destructive text-destructive-foreground hover:opacity-90">
               {deletingLogs ? 'กำลังลบ...' : 'ลบข้อมูลเวลา'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Reset all time logs confirm */}
+      <AlertDialog open={resetAllConfirm} onOpenChange={open => !open && setResetAllConfirm(false)}>
+        <AlertDialogContent className="max-w-[calc(100%-2rem)] md:max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>ล้างข้อมูลเวลาทั้งหมด?</AlertDialogTitle>
+            <AlertDialogDescription>
+              จะลบ time_logs และรีเซ็ต weekly_stats ของสมาชิกทุกคนเป็น 0 ไม่สามารถย้อนกลับได้
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>ยกเลิก</AlertDialogCancel>
+            <AlertDialogAction onClick={handleResetAllTimeLogs} disabled={resettingAll}
+              className="bg-destructive text-destructive-foreground hover:opacity-90">
+              {resettingAll ? 'กำลังล้าง...' : 'ล้างทั้งหมด'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

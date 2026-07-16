@@ -87,9 +87,9 @@ SELECT cron.unschedule('weekly-stats-reset') WHERE EXISTS (
   SELECT 1 FROM cron.job WHERE jobname = 'weekly-stats-reset'
 );
 
--- Schedule every Monday at 00:00 UTC
+-- Schedule every Monday at 00:00 Thai time (GMT+7) = Sunday 17:00 UTC
 SELECT cron.schedule(
   'weekly-stats-reset',
-  '0 0 * * 1',
+  '0 17 * * 0',
   'SELECT public.weekly_stats_reset()'
 );
