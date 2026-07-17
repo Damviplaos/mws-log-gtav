@@ -245,8 +245,8 @@ function PairedRow({
   partner: PresenceWithProfile;
   isPointed: boolean;
   channels: Channel[];
-  onSwitchChannel: (channelId: string) => void;
-  onCancelPair: () => void;
+  onSwitchChannel?: (channelId: string) => void;
+  onCancelPair?: () => void;
 }) {
   const name = (p: PresenceWithProfile) =>
     p.profile?.nickname || p.profile?.ic_name || p.profile?.username || '?';
@@ -261,30 +261,32 @@ function PairedRow({
         {name(me)}<span className="text-muted-foreground font-bold mx-1">+</span>{name(partner)}
         <span className="ml-1.5 text-xs text-muted-foreground font-normal">[จับคู่]</span>
       </span>
-      {/* Self menu */}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button className="flex items-center gap-0.5 text-xs text-muted-foreground hover:text-primary px-1.5 py-0.5 rounded border border-transparent hover:border-border transition-colors shrink-0">
-            เมนู <ChevronRight className="w-3 h-3" />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-48">
-          {channels.map(ch => (
-            <DropdownMenuItem
-              key={ch.id}
-              onClick={() => onSwitchChannel(ch.id)}
-              disabled={ch.id === me.channel_id}
-              className={ch.id === me.channel_id ? 'opacity-50' : ''}
-            >
-              {ch.id === me.channel_id ? '✓ ' : ''}{ch.display_name}
+      {/* Self menu — only show if callbacks are provided (i.e. this is the current user's pair) */}
+      {onSwitchChannel && onCancelPair && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button className="flex items-center gap-0.5 text-xs text-muted-foreground hover:text-primary px-1.5 py-0.5 rounded border border-transparent hover:border-border transition-colors shrink-0">
+              เมนู <ChevronRight className="w-3 h-3" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-48">
+            {channels.map(ch => (
+              <DropdownMenuItem
+                key={ch.id}
+                onClick={() => onSwitchChannel(ch.id)}
+                disabled={ch.id === me.channel_id}
+                className={ch.id === me.channel_id ? 'opacity-50' : ''}
+              >
+                {ch.id === me.channel_id ? '✓ ' : ''}{ch.display_name}
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={onCancelPair} className="text-destructive focus:text-destructive">
+              <X className="w-3.5 h-3.5 mr-2" /> ยกเลิกจับคู่
             </DropdownMenuItem>
-          ))}
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={onCancelPair} className="text-destructive focus:text-destructive">
-            <X className="w-3.5 h-3.5 mr-2" /> ยกเลิกจับคู่
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
     </div>
   );
 }
@@ -317,34 +319,40 @@ function ChannelSection({
   myPairUserId, onSwitchChannel, onStartPairing, onCancelPair,
   onMoveUser, onToggleOPUser, onAdminPair, canMoveOthers, canToggleOPOthers, canPairOthers,
 }: ChannelSectionProps) {
-  const myPresenceHere = presences.find(p => p.user_id === myUserId);
-  const partnerHere = myPairUserId ? presences.find(p => p.user_id === myPairUserId) : null;
-  const iAmHereAndPaired = !!myPresenceHere && !!partnerHere;
-
-  // Build rendered rows — merge paired users into one row when both are in this channel
+  // Build rendered rows — merge ALL paired users into one row when both are in this channel
   const renderedRows: JSX.Element[] = [];
   const skippedIds = new Set<string>();
 
-  // Pre-mark partner to skip if both are here
-  if (iAmHereAndPaired && myPresenceHere && partnerHere) {
-    skippedIds.add(partnerHere.user_id);
+  // Build a lookup of which users are paired with whom in this channel
+  const presenceMap = new Map(presences.map(p => [p.user_id, p]));
+
+  // Pre-mark all paired partners to skip (for ALL pairs, not just mine)
+  for (const p of presences) {
+    const pairedId = (p as PresenceWithProfile & { paired_with_user_id?: string | null }).paired_with_user_id;
+    if (pairedId && presenceMap.has(pairedId) && !skippedIds.has(p.user_id)) {
+      // This user is paired with someone in the same channel — skip the partner
+      skippedIds.add(pairedId);
+    }
   }
 
   for (const p of presences) {
     if (skippedIds.has(p.user_id)) continue;
     const isMe = p.user_id === myUserId;
 
-    if (isMe && iAmHereAndPaired && myPresenceHere && partnerHere) {
-      // Show merged pair row: "นายเอ + นายบี"
+    const pairedId = (p as PresenceWithProfile & { paired_with_user_id?: string | null }).paired_with_user_id;
+    const partnerPresence = pairedId ? presenceMap.get(pairedId) : null;
+
+    if (pairedId && partnerPresence) {
+      // Show merged pair row for ANY paired users
       renderedRows.push(
         <PairedRow
           key={`pair-${p.id}`}
-          me={myPresenceHere}
-          partner={partnerHere}
+          me={p}
+          partner={partnerPresence}
           isPointed={isReadyChannel && pointedUserId === p.user_id}
           channels={channels}
-          onSwitchChannel={onSwitchChannel}
-          onCancelPair={onCancelPair}
+          onSwitchChannel={isMe ? onSwitchChannel : undefined}
+          onCancelPair={isMe ? onCancelPair : undefined}
         />
       );
     } else {

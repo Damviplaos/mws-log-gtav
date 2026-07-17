@@ -437,10 +437,18 @@ export async function moveUserToChannel(targetUserId: string, channelId: string)
     if (e instanceof Error && (e.message.includes('สิทธิ์') || e.message.includes('403'))) {
       throw e;
     }
-    // Edge function not deployed — fall back to direct DB
+    // Edge function not deployed — try RPC
   }
 
-  // Fallback: direct move
+  // Level 2: RPC (SECURITY DEFINER — bypasses RLS)
+  const { error: rpcErr } = await supabase.rpc('admin_move_user', {
+    p_target_user_id: targetUserId,
+    p_channel_id: channelId,
+  });
+  if (!rpcErr) return;
+  console.error('admin_move_user RPC fallback error:', rpcErr);
+
+  // Level 3: Direct DB (only works if RLS allows it, e.g. super_admin)
   const { error: closeErr } = await supabase
     .from('time_logs')
     .update({ ended_at: new Date().toISOString() })
@@ -454,7 +462,6 @@ export async function moveUserToChannel(targetUserId: string, channelId: string)
     .eq('user_id', targetUserId);
   if (moveErr) throw moveErr;
 
-  // Start new time log if channel tracks time
   const { data: ch } = await supabase
     .from('channels')
     .select('track_time')
@@ -490,10 +497,18 @@ export async function setOPStatusForUser(targetUserId: string, isOp: boolean) {
     if (e instanceof Error && (e.message.includes('สิทธิ์') || e.message.includes('403'))) {
       throw e;
     }
-    // Edge function not deployed — fall back to direct DB
+    // Edge function not deployed — try RPC
   }
 
-  // Fallback: direct update — move to OP or ready room
+  // Level 2: RPC (SECURITY DEFINER — bypasses RLS)
+  const { error: rpcErr } = await supabase.rpc('admin_set_op', {
+    p_target_user_id: targetUserId,
+    p_is_op: isOp,
+  });
+  if (!rpcErr) return;
+  console.error('admin_set_op RPC fallback error:', rpcErr);
+
+  // Level 3: Direct DB (only works if RLS allows it, e.g. super_admin)
   const { error: closeErr } = await supabase
     .from('time_logs')
     .update({ ended_at: new Date().toISOString() })
@@ -501,7 +516,6 @@ export async function setOPStatusForUser(targetUserId: string, isOp: boolean) {
     .is('ended_at', null);
   if (closeErr) console.error('close time log error:', closeErr);
 
-  // Find OP/ready channels
   const { data: opCh } = await supabase.from('channels').select('id').eq('name', 'op').maybeSingle();
   const { data: readyCh } = await supabase.from('channels').select('id').eq('name', 'ready').maybeSingle();
 
@@ -526,7 +540,6 @@ export async function setOPStatusForUser(targetUserId: string, isOp: boolean) {
         is_op_time: isOp,
       });
     }
-    // If this is the current user, save channel so refresh preserves position
     const { data: { user: currentUser } } = await supabase.auth.getUser();
     if (currentUser && currentUser.id === targetUserId) {
       saveLastChannelId(newChannelId);
