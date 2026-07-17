@@ -40,8 +40,13 @@ Deno.serve(async (req: Request) => {
       .eq('id', caller.id)
       .maybeSingle();
 
-    if (!callerProfile || !['super_admin', 'admin'].includes(callerProfile.system_role)) {
-      return new Response(JSON.stringify({ error: 'ต้องการสิทธิ์แอดมิน' }), {
+    let allowed = ['super_admin', 'admin'].includes(callerProfile.system_role);
+    if (!allowed) {
+      const { data: perms } = await supabaseAdmin.rpc('get_user_permissions', { p_user_id: caller.id });
+      allowed = Array.isArray(perms) && perms.some((r: { permission: string }) => r.permission === 'manage_channels');
+    }
+    if (!allowed) {
+      return new Response(JSON.stringify({ error: 'ต้องการสิทธิ์ manage_channels' }), {
         status: 403,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });

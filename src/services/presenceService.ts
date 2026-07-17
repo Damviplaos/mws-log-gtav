@@ -423,11 +423,20 @@ export async function moveUserToChannel(targetUserId: string, channelId: string)
     });
     if (error) {
       const msg = await error?.context?.text?.();
-      throw new Error(msg || error.message);
+      const errText = msg || error.message || '';
+      // 403 = permission denied, don't silently swallow
+      if (error.context?.status === 403 || errText.includes('403') || errText.includes('สิทธิ์')) {
+        throw new Error(errText || 'ไม่มีสิทธิ์ย้ายผู้ใช้');
+      }
+      throw new Error(errText);
     }
     if (data?.error) throw new Error(data.error);
     return;
-  } catch (_e) {
+  } catch (e) {
+    // If it's a permission error, re-throw
+    if (e instanceof Error && (e.message.includes('สิทธิ์') || e.message.includes('403'))) {
+      throw e;
+    }
     // Edge function not deployed — fall back to direct DB
   }
 
@@ -469,11 +478,18 @@ export async function setOPStatusForUser(targetUserId: string, isOp: boolean) {
     });
     if (error) {
       const msg = await error?.context?.text?.();
-      throw new Error(msg || error.message);
+      const errText = msg || error.message || '';
+      if (error.context?.status === 403 || errText.includes('403') || errText.includes('สิทธิ์')) {
+        throw new Error(errText || 'ไม่มีสิทธิ์เปลี่ยนสถานะ OP');
+      }
+      throw new Error(errText);
     }
     if (data?.error) throw new Error(data.error);
     return;
-  } catch (_e) {
+  } catch (e) {
+    if (e instanceof Error && (e.message.includes('สิทธิ์') || e.message.includes('403'))) {
+      throw e;
+    }
     // Edge function not deployed — fall back to direct DB
   }
 
@@ -535,13 +551,19 @@ export async function pairUsers(partnerUserId: string) {
     if (data?.error) throw new Error(data.error);
     return;
   } catch (_e) {
-    // Edge function not deployed — fall back to direct RPC
+    // Edge function not deployed or failed — fall back
   }
 
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('ไม่ได้เข้าสู่ระบบ');
-  const { error } = await supabase.rpc('pair_users', { p_user_a: user.id, p_user_b: partnerUserId });
-  if (error) throw error;
+
+  // Try RPC
+  const { error: rpcErr } = await supabase.rpc('pair_users', { p_user_a: user.id, p_user_b: partnerUserId });
+  if (!rpcErr) return;
+
+  // RPC failed — direct DB fallback (update own row, then partner's row)
+  await supabase.from('user_presence').update({ paired_with_user_id: partnerUserId }).eq('user_id', user.id);
+  await supabase.from('user_presence').update({ paired_with_user_id: user.id }).eq('user_id', partnerUserId);
 }
 
 export async function pairUsersAsAdmin(targetUserId: string, partnerUserId: string) {
@@ -552,16 +574,28 @@ export async function pairUsersAsAdmin(targetUserId: string, partnerUserId: stri
     });
     if (error) {
       const msg = await error?.context?.text?.();
-      throw new Error(msg || error.message);
+      const errText = msg || error.message || '';
+      if (error.context?.status === 403 || errText.includes('403') || errText.includes('สิทธิ์')) {
+        throw new Error(errText || 'ไม่มีสิทธิ์จับคู่ให้ผู้อื่น');
+      }
+      throw new Error(errText);
     }
     if (data?.error) throw new Error(data.error);
     return;
-  } catch (_e) {
-    // Edge function not deployed — fall back to direct RPC
+  } catch (e) {
+    if (e instanceof Error && (e.message.includes('สิทธิ์') || e.message.includes('403'))) {
+      throw e;
+    }
+    // Edge function not deployed or failed — fall back
   }
 
-  const { error } = await supabase.rpc('pair_users', { p_user_a: targetUserId, p_user_b: partnerUserId });
-  if (error) throw error;
+  // Try RPC
+  const { error: rpcErr } = await supabase.rpc('pair_users', { p_user_a: targetUserId, p_user_b: partnerUserId });
+  if (!rpcErr) return;
+
+  // RPC failed — direct DB fallback
+  await supabase.from('user_presence').update({ paired_with_user_id: partnerUserId }).eq('user_id', targetUserId);
+  await supabase.from('user_presence').update({ paired_with_user_id: targetUserId }).eq('user_id', partnerUserId);
 }
 
 export async function cancelPair() {
@@ -577,11 +611,21 @@ export async function cancelPair() {
     if (data?.error) throw new Error(data.error);
     return;
   } catch (_e) {
-    // Edge function not deployed — fall back to direct RPC
+    // Edge function not deployed or failed — fall back
   }
 
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return;
-  const { error } = await supabase.rpc('cancel_pair', { p_user_id: user.id });
-  if (error) console.error('cancel pair error:', error);
+
+  // Try RPC
+  const { error: rpcErr } = await supabase.rpc('cancel_pair', { p_user_id: user.id });
+  if (!rpcErr) return;
+
+  // RPC failed — direct DB fallback: find partner then clear both sides
+  const { data: myPresence } = await supabase.from('user_presence').select('paired_with_user_id').eq('user_id', user.id).maybeSingle();
+  const partnerId = myPresence?.paired_with_user_id;
+  await supabase.from('user_presence').update({ paired_with_user_id: null }).eq('user_id', user.id);
+  if (partnerId) {
+    await supabase.from('user_presence').update({ paired_with_user_id: null }).eq('user_id', partnerId);
+  }
 }

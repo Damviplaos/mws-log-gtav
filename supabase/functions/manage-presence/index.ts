@@ -43,6 +43,15 @@ Deno.serve(async (req: Request) => {
 
     const callerTeamId = callerProfile?.team_id ?? null;
 
+    // Helper: check if caller has a specific permission (super_admin/admin always pass)
+    async function callerHasPermission(permissionKey: string): Promise<boolean> {
+      if (!callerProfile) return false;
+      if (['super_admin', 'admin'].includes(callerProfile.system_role)) return true;
+      const { data } = await supabaseAdmin.rpc('get_user_permissions', { p_user_id: user.id });
+      if (!Array.isArray(data)) return false;
+      return data.some((r: { permission: string }) => r.permission === permissionKey);
+    }
+
     const { action, channel_id, is_op, target_user_id, partner_user_id } = await req.json();
 
     if (action === 'join') {
@@ -294,8 +303,8 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === 'move_user') {
-      if (!callerProfile || !['super_admin', 'admin'].includes(callerProfile.system_role)) {
-        return new Response(JSON.stringify({ error: 'ต้องการสิทธิ์แอดมิน' }), {
+      if (!(await callerHasPermission('move_player'))) {
+        return new Response(JSON.stringify({ error: 'ต้องการสิทธิ์ move_player' }), {
           status: 403,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
@@ -371,8 +380,8 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === 'set_op_others') {
-      if (!callerProfile || !['super_admin', 'admin'].includes(callerProfile.system_role)) {
-        return new Response(JSON.stringify({ error: 'ต้องการสิทธิ์แอดมิน' }), {
+      if (!(await callerHasPermission('set_op_others'))) {
+        return new Response(JSON.stringify({ error: 'ต้องการสิทธิ์ set_op_others' }), {
           status: 403,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
@@ -507,8 +516,8 @@ Deno.serve(async (req: Request) => {
 
     // Admin pairs two OTHER users together (not self)
     if (action === 'pair_users_admin') {
-      if (!callerProfile || !['super_admin', 'admin'].includes(callerProfile.system_role)) {
-        return new Response(JSON.stringify({ error: 'ต้องการสิทธิ์แอดมิน' }), {
+      if (!(await callerHasPermission('admin_pair_others'))) {
+        return new Response(JSON.stringify({ error: 'ต้องการสิทธิ์ admin_pair_others' }), {
           status: 403,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });

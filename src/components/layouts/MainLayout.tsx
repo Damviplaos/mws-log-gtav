@@ -14,15 +14,15 @@ import {
 import { leavePresence } from '@/services/presenceService';
 import { toast } from 'sonner';
 
-// nav item: either needs system_role OR a permission key
+// nav item: either needs system_role OR a permission key (single or any-of array)
 const navItems = [
-  { label: 'คิวงาน',        path: '/queue',                icon: Radio,          permission: null,                     roles: ['super_admin', 'admin', 'user'] },
-  { label: 'Dashboard',     path: '/dashboard',            icon: LayoutDashboard, permission: 'view_own_dashboard',    roles: ['super_admin', 'admin', 'user'] },
-  { label: 'ภาพรวม',        path: '/admin/dashboard',      icon: LayoutDashboard, permission: 'view_admin_overview',   roles: ['super_admin', 'admin'] },
-  { label: 'จัดการยศ',      path: '/admin/roles',          icon: Shield,          permission: 'manage_roles',          roles: ['super_admin', 'admin'] },
-  { label: 'จัดการผู้ใช้',   path: '/admin/users',          icon: Users,           permission: 'create_users',          roles: ['super_admin', 'admin'] },
-  { label: 'ใบเตือน',       path: '/admin/warnings',       icon: AlertTriangle,   permission: null,                     roles: ['super_admin', 'admin', 'user'] },
-  { label: 'ตั้งค่าระบบ',    path: '/admin/web-settings',   icon: Sliders,         permission: 'manage_system_settings', roles: ['super_admin', 'admin'] },
+  { label: 'คิวงาน',        path: '/queue',                icon: Radio,          permission: null,                                roles: ['super_admin', 'admin', 'user'] },
+  { label: 'Dashboard',     path: '/dashboard',            icon: LayoutDashboard, permission: 'view_own_dashboard',               roles: ['super_admin', 'admin', 'user'] },
+  { label: 'ภาพรวม',        path: '/admin/dashboard',      icon: LayoutDashboard, permission: 'view_admin_overview',              roles: ['super_admin', 'admin'] },
+  { label: 'จัดการยศ',      path: '/admin/roles',          icon: Shield,          permission: 'manage_roles',                     roles: ['super_admin', 'admin'] },
+  { label: 'จัดการผู้ใช้',   path: '/admin/users',          icon: Users,           permissions: ['create_users', 'edit_users', 'delete_users', 'change_others_password', 'assign_roles'], roles: ['super_admin', 'admin'] },
+  { label: 'ใบเตือน',       path: '/admin/warnings',       icon: AlertTriangle,   permission: null,                                roles: ['super_admin', 'admin', 'user'] },
+  { label: 'ตั้งค่าระบบ',    path: '/admin/web-settings',   icon: Sliders,         permission: 'manage_system_settings',            roles: ['super_admin', 'admin'] },
 ];
 
 interface MainLayoutProps {
@@ -52,6 +52,9 @@ export default function MainLayout({ children }: MainLayoutProps) {
   // user: only sees items where their role_permissions grant the key, or items with no permission gate.
   const allowedNav = navItems.filter(n => {
     if (n.permission) return hasPermission(n.permission);
+    if ((n as { permissions?: string[] }).permissions) {
+      return (n as { permissions: string[] }).permissions.some(p => hasPermission(p));
+    }
     return n.roles.includes(role);
   });
 

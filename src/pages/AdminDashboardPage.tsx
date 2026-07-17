@@ -5,8 +5,8 @@ import { useTeam } from '@/contexts/TeamContext';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Skeleton } from '@/components/ui/skeleton';
 import { Input } from '@/components/ui/input';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger,
 } from '@/components/ui/dialog';
@@ -15,12 +15,13 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import {
-  CheckCircle, Clock, Star, Users, RefreshCw, Search, ExternalLink, History, Banknote, Trash2, UserCheck,
+  CheckCircle, Clock, Star, Users, RefreshCw, Search, ExternalLink, History, Banknote, Trash2, UserX, Plus, Copy,
 } from 'lucide-react';
 import {
   getAllProfiles, getAllWeeklyStats, getUserRoles, getWeekStart, getRoleCriteria, getPresenceLogs, deleteUserTimeLogs,
 } from '@/services/adminService';
-import type { Profile, WeeklyStats, Role, PresenceLog, RoleCriteria, PresenceWithProfile, Channel } from '@/types/types';
+import { createTeam } from '@/services/teamService';
+import type { Profile, WeeklyStats, Role, PresenceLog, RoleCriteria } from '@/types/types';
 import { toast } from 'sonner';
 
 function fmtTime(secs: number): string {
@@ -39,6 +40,8 @@ interface UserRow {
   stats: WeeklyStats | null;
   eligible: boolean;
   criteria: RoleCriteria | null;
+  weeklySalary: number;
+  isAbsent: boolean;
 }
 
 // =============================================
@@ -108,17 +111,69 @@ function PresenceLogDialog() {
   );
 }
 
+// =============================================
+// Team creation dialog
+// =============================================
+function CreateTeamDialog({ onCreated }: { onCreated: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleCreate = async () => {
+    if (!name.trim()) { toast.error('กรุณากรอกชื่อทีม'); return; }
+    setLoading(true);
+    try {
+      const team = await createTeam(name.trim());
+      toast.success(`สร้างทีม "${team.name}" สำเร็จ`);
+      setOpen(false);
+      setName('');
+      onCreated();
+    } catch {
+      toast.error('สร้างทีมไม่สำเร็จ');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button size="sm" className="h-8 bg-primary text-primary-foreground hover:opacity-90">
+          <Plus className="w-3.5 h-3.5 mr-1" /> สร้างทีม
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-[calc(100%-2rem)] md:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>สร้างทีมใหม่</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <Input value={name} onChange={e => setName(e.target.value)} placeholder="ชื่อทีม..." className="bg-muted border-border"
+            onKeyDown={e => e.key === 'Enter' && handleCreate()} />
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={() => setOpen(false)}>ยกเลิก</Button>
+            <Button size="sm" onClick={handleCreate} disabled={loading} className="bg-primary text-primary-foreground hover:opacity-90">
+              {loading ? 'กำลังสร้าง...' : 'สร้างทีม'}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function AdminDashboardPage() {
-  const { currentTeam } = useTeam();
+  const { currentTeam, teams, switchTeam } = useTeam();
   const { hasPermission } = useAuth();
   const teamId = currentTeam?.id;
   const [rows, setRows] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<'all' | 'absent'>('all');
   const navigate = useNavigate();
   const weekStart = getWeekStart();
   const [deleteTimeLogsUser, setDeleteTimeLogsUser] = useState<Profile | null>(null);
   const [deletingLogs, setDeletingLogs] = useState(false);
+  const [onlineUserIds, setOnlineUserIds] = useState<Set<string>>(new Set());
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -130,6 +185,12 @@ export default function AdminDashboardPage() {
 
       const statsMap = Object.fromEntries((statsArr as WeeklyStats[]).map(s => [s.user_id, s]));
 
+      // Get online user IDs from user_presence
+      const { supabase } = await import('@/db/supabase');
+      const { data: presenceData } = await supabase.from('user_presence').select('user_id');
+      const onlineIds = new Set((presenceData ?? []).map((p: { user_id: string }) => p.user_id));
+      setOnlineUserIds(onlineIds);
+
       const rowData: UserRow[] = await Promise.all(
         (profiles as Profile[]).map(async (p) => {
           const userRoles = await getUserRoles(p.id);
@@ -138,6 +199,7 @@ export default function AdminDashboardPage() {
 
           let eligible = false;
           let criteria: RoleCriteria | null = null;
+          let weeklySalary = 0;
           if (roles.length > 0) {
             const topRole = roles[roles.length - 1];
             criteria = await getRoleCriteria(topRole.id);
@@ -148,9 +210,12 @@ export default function AdminDashboardPage() {
               const opOk = !criteria.op_hours_enabled || opH >= (criteria.min_op_hours_per_week ?? 0);
               eligible = workOk && opOk;
             }
+            if (criteria?.hourly_salary != null && stats) {
+              weeklySalary = criteria.hourly_salary * ((stats.total_work_seconds ?? 0) / 3600);
+            }
           }
 
-          return { profile: p, roles, stats, eligible, criteria };
+          return { profile: p, roles, stats, eligible, criteria, weeklySalary, isAbsent: !onlineIds.has(p.id) };
         })
       );
 
@@ -166,12 +231,15 @@ export default function AdminDashboardPage() {
 
   const filtered = rows.filter(r => {
     const q = search.toLowerCase();
-    return (
-      r.profile.username.toLowerCase().includes(q) ||
+    const matchSearch = !q || r.profile.username.toLowerCase().includes(q) ||
       (r.profile.nickname?.toLowerCase() ?? '').includes(q) ||
-      (r.profile.ic_name?.toLowerCase() ?? '').includes(q)
-    );
+      (r.profile.ic_name?.toLowerCase() ?? '').includes(q);
+    if (filter === 'absent') return matchSearch && r.isAbsent;
+    return matchSearch;
   });
+
+  const totalSalary = rows.reduce((s, r) => s + r.weeklySalary, 0);
+  const absentCount = rows.filter(r => r.isAbsent).length;
 
   const handleDeleteTimeLogs = async () => {
     if (!deleteTimeLogsUser) return;
@@ -213,7 +281,7 @@ export default function AdminDashboardPage() {
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card className="border-border">
           <CardContent className="p-3 flex items-center gap-3">
             <Users className="w-8 h-8 text-primary" />
@@ -232,7 +300,16 @@ export default function AdminDashboardPage() {
             </div>
           </CardContent>
         </Card>
-        <Card className="border-border col-span-2 md:col-span-1">
+        <Card className="border-border">
+          <CardContent className="p-3 flex items-center gap-3">
+            <UserX className="w-8 h-8 text-destructive" />
+            <div>
+              <p className="text-xl font-bold">{absentCount}</p>
+              <p className="text-xs text-muted-foreground">ไม่ออนไลน์ (absent)</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="border-border">
           <CardContent className="p-3 flex items-center gap-3">
             <Clock className="w-8 h-8 text-accent" />
             <div>
@@ -243,6 +320,84 @@ export default function AdminDashboardPage() {
             </div>
           </CardContent>
         </Card>
+      </div>
+
+      {/* Total salary card */}
+      {totalSalary > 0 && (
+        <Card className="border-border border-primary/30 bg-primary/5">
+          <CardContent className="p-3 flex items-center gap-3">
+            <Banknote className="w-8 h-8 text-primary shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-muted-foreground">ยอดจ่ายเงินเดือนรวม (อาทิตย์นี้)</p>
+              <p className="text-xl font-bold text-primary">{fmtBaht(totalSalary)} ฿</p>
+              <p className="text-[11px] text-muted-foreground">
+                จาก {rows.filter(r => r.weeklySalary > 0).length} คนที่มีค่าตอบแทนต่อชั่วโมง
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Team management */}
+      {hasPermission('manage_teams') && (
+        <Card className="border-border">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm flex items-center justify-between">
+              <span>จัดการทีม</span>
+              <CreateTeamDialog onCreated={loadData} />
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {teams.length === 0 ? (
+              <p className="text-xs text-muted-foreground">ยังไม่มีทีม</p>
+            ) : (
+              teams.map(t => (
+                <div key={t.id} className={`flex items-center justify-between gap-3 py-2 px-3 rounded-sm border transition-colors ${t.id === teamId ? 'border-primary/40 bg-primary/5' : 'border-border hover:bg-muted/30'}`}>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-7 h-7 rounded-sm bg-primary/20 flex items-center justify-center shrink-0">
+                      <span className="text-xs font-bold text-primary">{t.name[0]?.toUpperCase()}</span>
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-foreground truncate">{t.name}</p>
+                      <p className="text-[10px] text-muted-foreground">#{t.invite_code}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => {
+                      navigator.clipboard.writeText(t.invite_code);
+                      toast.success(`คัดลอก "${t.invite_code}" แล้ว`);
+                    }}>
+                      <Copy className="w-3 h-3 mr-1" /> คัดลอก
+                    </Button>
+                    {t.id !== teamId && (
+                      <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => switchTeam(t.id)}>
+                        สลับ
+                      </Button>
+                    )}
+                    {t.id === teamId && (
+                      <Badge className="bg-primary/20 text-primary border-primary/30 text-[10px]">ปัจจุบัน</Badge>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Filter tabs */}
+      <div className="flex gap-1 bg-muted rounded-sm p-0.5 w-fit">
+        {([['all', `ทั้งหมด (${rows.length})`], ['absent', `ไม่ออนไลน์ (${absentCount})`]] as const).map(([f, label]) => (
+          <button
+            key={f}
+            onClick={() => setFilter(f as 'all' | 'absent')}
+            className={`px-3 py-1 text-xs font-medium rounded-sm transition-colors ${
+              filter === f ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
       {/* Table */}
@@ -264,6 +419,9 @@ export default function AdminDashboardPage() {
                   <th className="text-right px-4 py-2 text-xs text-muted-foreground font-medium whitespace-nowrap">
                     <Star className="w-3 h-3 inline mr-1" />OP
                   </th>
+                  <th className="text-right px-4 py-2 text-xs text-muted-foreground font-medium whitespace-nowrap">
+                    <Banknote className="w-3 h-3 inline mr-1" />เงิน
+                  </th>
                   <th className="text-center px-4 py-2 text-xs text-muted-foreground font-medium whitespace-nowrap">สถานะ</th>
                   <th className="text-center px-4 py-2 text-xs text-muted-foreground font-medium whitespace-nowrap">จัดการ</th>
                 </tr>
@@ -272,18 +430,18 @@ export default function AdminDashboardPage() {
                 {loading ? (
                   Array.from({ length: 5 }).map((_, i) => (
                     <tr key={i}>
-                      {Array.from({ length: 7 }).map((_, j) => (
+                      {Array.from({ length: 8 }).map((_, j) => (
                         <td key={j} className="px-4 py-2"><Skeleton className="h-4 w-full" /></td>
                       ))}
                     </tr>
                   ))
                 ) : filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="text-center py-8 text-muted-foreground text-sm">ไม่พบข้อมูล</td>
+                    <td colSpan={8} className="text-center py-8 text-muted-foreground text-sm">ไม่พบข้อมูล</td>
                   </tr>
                 ) : (
                   filtered.map(row => (
-                    <tr key={row.profile.id} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
+                    <tr key={row.profile.id} className={`border-b border-border/50 hover:bg-muted/30 transition-colors ${row.isAbsent ? 'opacity-60' : ''}`}>
                       <td className="px-4 py-2.5 whitespace-nowrap font-medium">
                         <button
                           onClick={() => navigate(`/dashboard?userId=${row.profile.id}`)}
@@ -312,8 +470,13 @@ export default function AdminDashboardPage() {
                       <td className="px-4 py-2.5 text-right whitespace-nowrap font-mono text-xs text-warning">
                         {fmtTime(row.stats?.total_op_seconds ?? 0)}
                       </td>
+                      <td className="px-4 py-2.5 text-right whitespace-nowrap font-mono text-xs text-primary">
+                        {row.weeklySalary > 0 ? `${fmtBaht(row.weeklySalary)} ฿` : '-'}
+                      </td>
                       <td className="px-4 py-2.5 text-center whitespace-nowrap">
-                        {row.eligible ? (
+                        {row.isAbsent ? (
+                          <Badge variant="outline" className="text-destructive border-destructive/30 text-xs">ไม่ออนไลน์</Badge>
+                        ) : row.eligible ? (
                           <Badge className="bg-success/20 text-success border-success/30 text-xs">
                             ✓ ผ่านเกณฑ์
                           </Badge>

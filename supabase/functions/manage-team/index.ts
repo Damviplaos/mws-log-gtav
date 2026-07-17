@@ -105,8 +105,13 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === 'admin_move_user') {
-      if (!['super_admin', 'admin'].includes(callerProfile.system_role)) {
-        return new Response(JSON.stringify({ error: 'ต้องการสิทธิ์แอดมิน' }), {
+      let allowed = ['super_admin', 'admin'].includes(callerProfile.system_role);
+      if (!allowed) {
+        const { data: perms } = await supabaseAdmin.rpc('get_user_permissions', { p_user_id: user.id });
+        allowed = Array.isArray(perms) && perms.some((r: { permission: string }) => r.permission === 'move_player');
+      }
+      if (!allowed) {
+        return new Response(JSON.stringify({ error: 'ต้องการสิทธิ์ move_player' }), {
           status: 403,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });

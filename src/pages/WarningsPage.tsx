@@ -49,6 +49,7 @@ const SEVERITY_COLOR: Record<string, string> = {
 // =============================================
 function IssueWarningDialog({ profiles, onIssued }: { profiles: Profile[]; onIssued: () => void }) {
   const { profile: me } = useAuth();
+  const { currentTeam } = useTeam();
   const [open, setOpen] = useState(false);
   const [userId, setUserId] = useState('');
   const [reason, setReason] = useState('');
@@ -61,14 +62,16 @@ function IssueWarningDialog({ profiles, onIssued }: { profiles: Profile[]; onIss
     if (!me) return;
     setLoading(true);
     try {
-      const { error } = await supabase.from('warnings').insert({
+      const insertData: Record<string, unknown> = {
         user_id: userId,
         issued_by: me.id,
         reason: reason.trim(),
         severity,
         is_active: true,
         expires_at: expiresAt || null,
-      });
+      };
+      if (currentTeam?.id) insertData.team_id = currentTeam.id;
+      const { error } = await supabase.from('warnings').insert(insertData);
       if (error) throw error;
       toast.success('ออกใบเตือนสำเร็จ');
       setOpen(false);
@@ -243,17 +246,26 @@ export default function WarningsPage() {
     setLoading(true);
     try {
       let query = supabase.from('warnings').select('*, user:profiles!user_id(*), issuer:profiles!issued_by(*)').order('created_at', { ascending: false });
-      if (teamId) query = query.eq('team_id', teamId);
       if (!isAdmin) query = query.eq('user_id', me!.id);
       const { data, error } = await query;
-      if (error) throw error;
-      setWarnings((data ?? []) as Warning[]);
+      if (error) {
+        // If team_id column doesn't exist, the select with profiles join may fail
+        // Try simpler query
+        let fallback = supabase.from('warnings').select('*').order('created_at', { ascending: false });
+        if (!isAdmin) fallback = fallback.eq('user_id', me!.id);
+        const { data: fb, error: fbErr } = await fallback;
+        if (fbErr) throw fbErr;
+        setWarnings((fb ?? []) as Warning[]);
+      } else {
+        setWarnings((data ?? []) as Warning[]);
+      }
       if (isAdmin) {
         const p = await getAllProfiles(teamId);
         setProfiles(p as Profile[]);
       }
     } catch {
-      toast.error('โหลดใบเตือนไม่สำเร็จ');
+      setWarnings([]);
+      setProfiles([]);
     } finally {
       setLoading(false);
     }

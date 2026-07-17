@@ -20,9 +20,9 @@ export interface RouteConfig {
   public?: boolean;
 }
 
-function Protected({ children, roles, permission }: { children: ReactNode; roles?: SystemRole[]; permission?: string }) {
+function Protected({ children, roles, permission, permissions }: { children: ReactNode; roles?: SystemRole[]; permission?: string; permissions?: string[] }) {
   return (
-    <ProtectedRoute requiredRoles={roles} requiredPermission={permission}>
+    <ProtectedRoute requiredRoles={roles} requiredPermission={permission} requiredPermissions={permissions}>
       <MainLayout>{children}</MainLayout>
     </ProtectedRoute>
   );
@@ -66,7 +66,7 @@ export const routes: RouteConfig[] = [
   {
     name: 'User Management',
     path: '/admin/users',
-    element: <Protected roles={['super_admin', 'admin']} permission="create_users"><UserManagementPage /></Protected>,
+    element: <Protected roles={['super_admin', 'admin']} permissions={['create_users', 'edit_users', 'delete_users', 'change_others_password', 'assign_roles']}><UserManagementPage /></Protected>,
   },
   {
     name: 'Warnings',
