@@ -38,7 +38,8 @@ function useRoleCache(userIds: string[]): Map<string, Role[]> {
         });
       });
     return () => { cancelled = true; };
-  }, [userIds.join(','), cache]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userIds.join(',')]);
   return cache;
 }
 

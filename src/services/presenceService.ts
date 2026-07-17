@@ -6,163 +6,50 @@ import type { Channel, PresenceWithProfile, QueuePointer } from '@/types/types';
 // =============================================
 
 export async function joinPresence(channelId?: string) {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('ไม่ได้เข้าสู่ระบบ');
-
-  const { data: existing } = await supabase
-    .from('user_presence')
-    .select('channel_id, is_op')
-    .eq('user_id', user.id)
-    .maybeSingle();
-
-  if (existing) {
-    saveLastChannelId(existing.channel_id);
-    await supabase
-      .from('user_presence')
-      .update({ last_heartbeat: new Date().toISOString() })
-      .eq('user_id', user.id);
-    return existing;
+  const { data, error } = await supabase.functions.invoke('manage-presence', {
+    body: { action: 'join', channel_id: channelId ?? null },
+    method: 'POST',
+  });
+  if (error) {
+    const msg = await error?.context?.text?.();
+    throw new Error(msg || error.message);
   }
-
-  try {
-    const { data, error } = await supabase.functions.invoke('manage-presence', {
-      body: { action: 'join', channel_id: channelId ?? null },
-      method: 'POST',
-    });
-    if (error) {
-      const msg = await error?.context?.text?.();
-      throw new Error(msg || error.message);
-    }
-    return data;
-  } catch {
-    // Fall back to direct DB
-  }
-
-  let targetChannelId = channelId;
-  if (!targetChannelId) {
-    const { data: readyCh } = await supabase
-      .from('channels')
-      .select('id')
-      .eq('name', 'ready')
-      .maybeSingle();
-    targetChannelId = readyCh?.id;
-  }
-  if (!targetChannelId) throw new Error('ไม่พบห้องพร้อมทำงาน');
-
-  const { data: newPresence, error: insertErr } = await supabase
-    .from('user_presence')
-    .insert({
-      user_id: user.id,
-      channel_id: targetChannelId,
-      joined_channel_at: new Date().toISOString(),
-      session_started_at: new Date().toISOString(),
-      last_heartbeat: new Date().toISOString(),
-      is_op: false,
-    })
-    .select()
-    .maybeSingle();
-  if (insertErr) throw insertErr;
-
-  const { data: ch } = await supabase
-    .from('channels')
-    .select('track_time')
-    .eq('id', targetChannelId)
-    .maybeSingle();
-  if (ch?.track_time) {
-    await supabase.from('time_logs').insert({
-      user_id: user.id,
-      channel_id: targetChannelId,
-      started_at: new Date().toISOString(),
-      is_op_time: false,
-    });
-  }
-
-  return newPresence;
+  return data;
 }
 
 export async function leavePresence() {
-  try {
-    const { data, error } = await supabase.functions.invoke('manage-presence', {
-      body: { action: 'leave' },
-      method: 'POST',
-    });
-    if (error) {
-      const msg = await error?.context?.text?.();
-      throw new Error(msg || error.message);
-    }
-    return data;
-  } catch {
-    // Fall back to direct DB
+  const { data, error } = await supabase.functions.invoke('manage-presence', {
+    body: { action: 'leave' },
+    method: 'POST',
+  });
+  if (error) {
+    const msg = await error?.context?.text?.();
+    throw new Error(msg || error.message);
   }
-
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return;
-
-  await supabase
-    .from('time_logs')
-    .update({ ended_at: new Date().toISOString() })
-    .eq('user_id', user.id)
-    .is('ended_at', null);
-
-  await supabase.from('user_presence').delete().eq('user_id', user.id);
+  return data;
 }
 
 export async function sendHeartbeat() {
-  try {
-    const { error } = await supabase.functions.invoke('manage-presence', {
-      body: { action: 'heartbeat' },
-      method: 'POST',
-    });
-    if (error) {
-      const msg = await error?.context?.text?.();
-      console.error('Heartbeat error:', msg || error.message);
-    }
-  } catch {
-    // Silent
+  const { error } = await supabase.functions.invoke('manage-presence', {
+    body: { action: 'heartbeat' },
+    method: 'POST',
+  });
+  if (error) {
+    const msg = await error?.context?.text?.();
+    console.error('Heartbeat error:', msg || error.message);
   }
 }
 
 export async function setOPStatus(isOp: boolean) {
-  try {
-    const { data, error } = await supabase.functions.invoke('manage-presence', {
-      body: { action: 'set_op', is_op: isOp },
-      method: 'POST',
-    });
-    if (error) {
-      const msg = await error?.context?.text?.();
-      throw new Error(msg || error.message);
-    }
-    return data;
-  } catch {
-    // Fall back to direct DB
+  const { data, error } = await supabase.functions.invoke('manage-presence', {
+    body: { action: 'set_op', is_op: isOp },
+    method: 'POST',
+  });
+  if (error) {
+    const msg = await error?.context?.text?.();
+    throw new Error(msg || error.message);
   }
-
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('ไม่ได้เข้าสู่ระบบ');
-
-  await supabase.from('time_logs').update({ ended_at: new Date().toISOString() }).eq('user_id', user.id).is('ended_at', null);
-
-  const { data: opCh } = await supabase.from('channels').select('id').eq('name', 'op').maybeSingle();
-  const { data: readyCh } = await supabase.from('channels').select('id').eq('name', 'ready').maybeSingle();
-
-  const { data: tp } = await supabase.from('user_presence').select('channel_id').eq('user_id', user.id).maybeSingle();
-  let newChannelId = tp?.channel_id;
-  if (isOp && opCh) newChannelId = opCh.id;
-  else if (!isOp && readyCh) newChannelId = readyCh.id;
-
-  const { error: opErr } = await supabase
-    .from('user_presence')
-    .update({ is_op: isOp, channel_id: newChannelId, joined_channel_at: new Date().toISOString() })
-    .eq('user_id', user.id);
-  if (opErr) throw opErr;
-
-  if (newChannelId) {
-    saveLastChannelId(newChannelId);
-    const { data: ch } = await supabase.from('channels').select('track_time').eq('id', newChannelId).maybeSingle();
-    if (ch?.track_time) {
-      await supabase.from('time_logs').insert({ user_id: user.id, channel_id: newChannelId, started_at: new Date().toISOString(), is_op_time: isOp });
-    }
-  }
+  return data;
 }
 
 const LAST_CHANNEL_KEY = 'medic:last_channel_id';
@@ -176,61 +63,23 @@ export function getLastChannelId(): string | null {
 }
 
 export async function switchChannel(channelId: string) {
-  try {
-    const { data, error } = await supabase.functions.invoke('manage-presence', {
-      body: { action: 'join', channel_id: channelId },
-      method: 'POST',
-    });
-    if (error) {
-      const msg = await error?.context?.text?.();
-      throw new Error(msg || error.message);
-    }
-    saveLastChannelId(channelId);
-    return data;
-  } catch {
-    // Fall back to direct DB
+  const { data, error } = await supabase.functions.invoke('manage-presence', {
+    body: { action: 'join', channel_id: channelId },
+    method: 'POST',
+  });
+  if (error) {
+    const msg = await error?.context?.text?.();
+    throw new Error(msg || error.message);
   }
-
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('ไม่ได้เข้าสู่ระบบ');
-
-  await supabase.from('time_logs').update({ ended_at: new Date().toISOString() }).eq('user_id', user.id).is('ended_at', null);
-
-  const { data: existing } = await supabase.from('user_presence').select('id').eq('user_id', user.id).maybeSingle();
-
-  if (existing) {
-    const { error: updateErr } = await supabase
-      .from('user_presence')
-      .update({ channel_id: channelId, joined_channel_at: new Date().toISOString() })
-      .eq('user_id', user.id);
-    if (updateErr) throw updateErr;
-  } else {
-    const { error: insertErr } = await supabase
-      .from('user_presence')
-      .insert({ user_id: user.id, channel_id: channelId, is_op: false, joined_channel_at: new Date().toISOString(), last_heartbeat: new Date().toISOString() });
-    if (insertErr) throw insertErr;
-  }
-
   saveLastChannelId(channelId);
-  const { data: ch } = await supabase.from('channels').select('track_time').eq('id', channelId).maybeSingle();
-  if (ch?.track_time) {
-    await supabase.from('time_logs').insert({ user_id: user.id, channel_id: channelId, started_at: new Date().toISOString(), is_op_time: false });
-  }
+  return data;
 }
 
 // =============================================
 // Channels
 // =============================================
 
-export async function getChannels(teamId?: string): Promise<Channel[]> {
-  if (teamId) {
-    const { data, error } = await supabase
-      .from('channels')
-      .select('*')
-      .eq('team_id', teamId)
-      .order('sort_order', { ascending: true });
-    if (!error && Array.isArray(data) && data.length > 0) return data as Channel[];
-  }
+export async function getChannels(): Promise<Channel[]> {
   const { data, error } = await supabase
     .from('channels')
     .select('*')
@@ -247,7 +96,7 @@ export async function updateChannelTrackTime(channelId: string, trackTime: boole
   if (error) throw error;
 }
 
-export async function addChannel(displayName: string, teamId?: string): Promise<Channel> {
+export async function addChannel(displayName: string): Promise<Channel> {
   const { data: existing } = await supabase
     .from('channels')
     .select('sort_order')
@@ -255,11 +104,9 @@ export async function addChannel(displayName: string, teamId?: string): Promise<
     .limit(1);
   const maxOrder = existing?.[0]?.sort_order ?? 0;
   const slug = displayName.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-ก-๙]/g, '') || `ch-${Date.now()}`;
-  const insertData: Record<string, unknown> = { name: slug, display_name: displayName.trim(), sort_order: maxOrder + 1, track_time: true };
-  if (teamId) insertData.team_id = teamId;
   const { data, error } = await supabase
     .from('channels')
-    .insert(insertData)
+    .insert({ name: slug, display_name: displayName.trim(), sort_order: maxOrder + 1, track_time: true })
     .select()
     .maybeSingle();
   if (error) throw error;
@@ -278,8 +125,7 @@ export async function deleteChannel(channelId: string) {
     }
     if (data?.error) throw new Error(data.error);
     return;
-  } catch {
-    // Fall back to direct delete
+  } catch (_edgeFnError) {
   }
 
   const { data: otherChannels } = await supabase
@@ -316,19 +162,7 @@ export async function deleteChannel(channelId: string) {
 // Presence List
 // =============================================
 
-export async function getAllPresence(teamId?: string): Promise<PresenceWithProfile[]> {
-  if (teamId) {
-    const { data, error } = await supabase
-      .from('user_presence')
-      .select(`
-        *,
-        profile:profiles!user_presence_user_id_fkey(*),
-        channel:channels!user_presence_channel_id_fkey(*)
-      `)
-      .eq('team_id', teamId)
-      .order('joined_channel_at', { ascending: true });
-    if (!error && Array.isArray(data) && data.length > 0) return data as PresenceWithProfile[];
-  }
+export async function getAllPresence(): Promise<PresenceWithProfile[]> {
   const { data, error } = await supabase
     .from('user_presence')
     .select(`
@@ -345,16 +179,7 @@ export async function getAllPresence(teamId?: string): Promise<PresenceWithProfi
 // Queue Pointer
 // =============================================
 
-export async function getQueuePointer(teamId?: string): Promise<QueuePointer | null> {
-  if (teamId) {
-    const { data, error } = await supabase
-      .from('queue_pointer')
-      .select('*')
-      .eq('id', '00000000-0000-0000-0000-000000000001')
-      .eq('team_id', teamId)
-      .maybeSingle();
-    if (!error && data) return data as QueuePointer;
-  }
+export async function getQueuePointer(): Promise<QueuePointer | null> {
   const { data, error } = await supabase
     .from('queue_pointer')
     .select('*')
@@ -412,101 +237,27 @@ export async function randomSelectOP(readyChannelId: string) {
 // =============================================
 
 export async function moveUserToChannel(targetUserId: string, channelId: string) {
-  try {
-    const { data, error } = await supabase.functions.invoke('manage-presence', {
-      body: { action: 'move_user', target_user_id: targetUserId, channel_id: channelId },
-      method: 'POST',
-    });
-    if (error) {
-      const msg = await error?.context?.text?.();
-      throw new Error(msg || error.message);
-    }
-    if (data?.error) throw new Error(data.error);
-    return;
-  } catch {
-    // Fall back to direct DB
+  const { data, error } = await supabase.functions.invoke('manage-presence', {
+    body: { action: 'move_user', target_user_id: targetUserId, channel_id: channelId },
+    method: 'POST',
+  });
+  if (error) {
+    const msg = await error?.context?.text?.();
+    throw new Error(msg || error.message);
   }
-
-  const { error: closeErr } = await supabase
-    .from('time_logs')
-    .update({ ended_at: new Date().toISOString() })
-    .eq('user_id', targetUserId)
-    .is('ended_at', null);
-  if (closeErr) console.error('close time log error:', closeErr);
-
-  const { error: moveErr } = await supabase
-    .from('user_presence')
-    .update({ channel_id: channelId, joined_channel_at: new Date().toISOString() })
-    .eq('user_id', targetUserId);
-  if (moveErr) throw moveErr;
-
-  const { data: ch } = await supabase
-    .from('channels')
-    .select('track_time')
-    .eq('id', channelId)
-    .maybeSingle();
-  if (ch?.track_time) {
-    await supabase.from('time_logs').insert({
-      user_id: targetUserId,
-      channel_id: channelId,
-      started_at: new Date().toISOString(),
-      is_op_time: false,
-    });
-  }
+  if (data?.error) throw new Error(data.error);
 }
 
 export async function setOPStatusForUser(targetUserId: string, isOp: boolean) {
-  try {
-    const { data, error } = await supabase.functions.invoke('manage-presence', {
-      body: { action: 'set_op_others', target_user_id: targetUserId, is_op: isOp },
-      method: 'POST',
-    });
-    if (error) {
-      const msg = await error?.context?.text?.();
-      throw new Error(msg || error.message);
-    }
-    if (data?.error) throw new Error(data.error);
-    return;
-  } catch {
-    // Fall back to direct DB
+  const { data, error } = await supabase.functions.invoke('manage-presence', {
+    body: { action: 'set_op_others', target_user_id: targetUserId, is_op: isOp },
+    method: 'POST',
+  });
+  if (error) {
+    const msg = await error?.context?.text?.();
+    throw new Error(msg || error.message);
   }
-
-  const { error: closeErr } = await supabase
-    .from('time_logs')
-    .update({ ended_at: new Date().toISOString() })
-    .eq('user_id', targetUserId)
-    .is('ended_at', null);
-  if (closeErr) console.error('close time log error:', closeErr);
-
-  const { data: opCh } = await supabase.from('channels').select('id').eq('name', 'op').maybeSingle();
-  const { data: readyCh } = await supabase.from('channels').select('id').eq('name', 'ready').maybeSingle();
-
-  const { data: tp } = await supabase.from('user_presence').select('channel_id').eq('user_id', targetUserId).maybeSingle();
-  let newChannelId = tp?.channel_id;
-  if (isOp && opCh) newChannelId = opCh.id;
-  else if (!isOp && readyCh) newChannelId = readyCh.id;
-
-  const { error: opErr } = await supabase
-    .from('user_presence')
-    .update({ is_op: isOp, channel_id: newChannelId, joined_channel_at: new Date().toISOString() })
-    .eq('user_id', targetUserId);
-  if (opErr) throw opErr;
-
-  if (newChannelId) {
-    const { data: ch } = await supabase.from('channels').select('track_time').eq('id', newChannelId).maybeSingle();
-    if (ch?.track_time) {
-      await supabase.from('time_logs').insert({
-        user_id: targetUserId,
-        channel_id: newChannelId,
-        started_at: new Date().toISOString(),
-        is_op_time: isOp,
-      });
-    }
-    const { data: { user: currentUser } } = await supabase.auth.getUser();
-    if (currentUser && currentUser.id === targetUserId) {
-      saveLastChannelId(newChannelId);
-    }
-  }
+  if (data?.error) throw new Error(data.error);
 }
 
 // =============================================
@@ -514,71 +265,37 @@ export async function setOPStatusForUser(targetUserId: string, isOp: boolean) {
 // =============================================
 
 export async function pairUsers(partnerUserId: string) {
-  try {
-    const { data, error } = await supabase.functions.invoke('manage-presence', {
-      body: { action: 'pair_users', partner_user_id: partnerUserId },
-      method: 'POST',
-    });
-    if (error) {
-      const msg = await error?.context?.text?.();
-      throw new Error(msg || error.message);
-    }
-    if (data?.error) throw new Error(data.error);
-    return;
-  } catch {
-    // Fall back to direct DB
+  const { data, error } = await supabase.functions.invoke('manage-presence', {
+    body: { action: 'pair_users', partner_user_id: partnerUserId },
+    method: 'POST',
+  });
+  if (error) {
+    const msg = await error?.context?.text?.();
+    throw new Error(msg || error.message);
   }
-
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('ไม่ได้เข้าสู่ระบบ');
-
-  await supabase.from('user_presence').update({ paired_with_user_id: partnerUserId }).eq('user_id', user.id);
-  await supabase.from('user_presence').update({ paired_with_user_id: user.id }).eq('user_id', partnerUserId);
+  if (data?.error) throw new Error(data.error);
 }
 
 export async function pairUsersAsAdmin(targetUserId: string, partnerUserId: string) {
-  try {
-    const { data, error } = await supabase.functions.invoke('manage-presence', {
-      body: { action: 'pair_users_admin', target_user_id: targetUserId, partner_user_id: partnerUserId },
-      method: 'POST',
-    });
-    if (error) {
-      const msg = await error?.context?.text?.();
-      throw new Error(msg || error.message);
-    }
-    if (data?.error) throw new Error(data.error);
-    return;
-  } catch {
-    // Fall back to direct DB
+  const { data, error } = await supabase.functions.invoke('manage-presence', {
+    body: { action: 'pair_users_admin', target_user_id: targetUserId, partner_user_id: partnerUserId },
+    method: 'POST',
+  });
+  if (error) {
+    const msg = await error?.context?.text?.();
+    throw new Error(msg || error.message);
   }
-
-  await supabase.from('user_presence').update({ paired_with_user_id: partnerUserId }).eq('user_id', targetUserId);
-  await supabase.from('user_presence').update({ paired_with_user_id: targetUserId }).eq('user_id', partnerUserId);
+  if (data?.error) throw new Error(data.error);
 }
 
 export async function cancelPair() {
-  try {
-    const { data, error } = await supabase.functions.invoke('manage-presence', {
-      body: { action: 'cancel_pair' },
-      method: 'POST',
-    });
-    if (error) {
-      const msg = await error?.context?.text?.();
-      throw new Error(msg || error.message);
-    }
-    if (data?.error) throw new Error(data.error);
-    return;
-  } catch {
-    // Fall back to direct DB
+  const { data, error } = await supabase.functions.invoke('manage-presence', {
+    body: { action: 'cancel_pair' },
+    method: 'POST',
+  });
+  if (error) {
+    const msg = await error?.context?.text?.();
+    throw new Error(msg || error.message);
   }
-
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return;
-
-  const { data: myPresence } = await supabase.from('user_presence').select('paired_with_user_id').eq('user_id', user.id).maybeSingle();
-  const partnerId = myPresence?.paired_with_user_id;
-  await supabase.from('user_presence').update({ paired_with_user_id: null }).eq('user_id', user.id);
-  if (partnerId) {
-    await supabase.from('user_presence').update({ paired_with_user_id: null }).eq('user_id', partnerId);
-  }
+  if (data?.error) throw new Error(data.error);
 }

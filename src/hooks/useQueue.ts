@@ -19,44 +19,29 @@ import {
   cancelPair,
 } from '@/services/presenceService';
 import { useAuth } from '@/contexts/AuthContext';
-import { useTeam } from '@/contexts/TeamContext';
 import { toast } from 'sonner';
-
-function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
-  ]);
-}
 
 export function useQueue() {
   const { user, profile } = useAuth();
-  const { currentTeam } = useTeam();
-  const teamId = currentTeam?.id;
   const [presenceList, setPresenceList] = useState<PresenceWithProfile[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [pointer, setPointer] = useState<QueuePointer | null>(null);
   const [loading, setLoading] = useState(true);
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const joinedRef = useRef(false);
-  const prevTeamRef = useRef<string | undefined>(undefined);
 
   const fetchAll = useCallback(async () => {
-    try {
-      const [pList, chList, ptr] = await Promise.all([
-        withTimeout(getAllPresence(teamId), 10000, []),
-        withTimeout(getChannels(teamId), 10000, []),
-        withTimeout(getQueuePointer(teamId), 10000, null),
-      ]);
-      setPresenceList(pList);
-      setChannels(chList);
-      setPointer(ptr);
-    } catch (err) {
-      console.error('fetchAll error:', err);
-    }
-  }, [teamId]);
+    const [pList, chList, ptr] = await Promise.all([
+      getAllPresence(),
+      getChannels(),
+      getQueuePointer(),
+    ]);
+    setPresenceList(pList);
+    setChannels(chList);
+    setPointer(ptr);
+  }, []);
 
-  // Auto-join on mount and re-join when team changes
+  // Auto-join on mount (restore last channel after refresh/F5)
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
@@ -64,15 +49,9 @@ export function useQueue() {
     const init = async () => {
       setLoading(true);
       try {
-        // Re-join if team changed
-        if (prevTeamRef.current !== teamId) {
-          joinedRef.current = false;
-          prevTeamRef.current = teamId;
-        }
-
         if (!joinedRef.current) {
           const lastChannelId = getLastChannelId();
-          await withTimeout(joinPresence(lastChannelId ?? undefined), 10000, null);
+          await joinPresence(lastChannelId ?? undefined);
           joinedRef.current = true;
         }
         if (!cancelled) await fetchAll();
@@ -91,7 +70,7 @@ export function useQueue() {
       cancelled = true;
       if (heartbeatRef.current) clearInterval(heartbeatRef.current);
     };
-  }, [user, fetchAll, teamId]);
+  }, [user, fetchAll]);
 
   // Leave on window unload
   useEffect(() => {
@@ -100,33 +79,18 @@ export function useQueue() {
     return () => window.removeEventListener('beforeunload', handler);
   }, []);
 
-  // Realtime subscriptions — debounced to prevent storms
+  // Realtime subscriptions
   useEffect(() => {
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-    const debouncedFetchAll = () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => { fetchAll(); }, 400);
-    };
-    let pointerDebounce: ReturnType<typeof setTimeout> | null = null;
-    const debouncedPointer = () => {
-      if (pointerDebounce) clearTimeout(pointerDebounce);
-      pointerDebounce = setTimeout(() => {
-        getQueuePointer(teamId).then(p => setPointer(p));
-      }, 400);
-    };
-
     const channel = supabase
       .channel('queue-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'user_presence' }, debouncedFetchAll)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'queue_pointer' }, debouncedPointer)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'user_presence' }, () => fetchAll())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'queue_pointer' }, () => {
+        getQueuePointer().then(p => setPointer(p));
+      })
       .subscribe();
 
-    return () => {
-      if (debounceTimer) clearTimeout(debounceTimer);
-      if (pointerDebounce) clearTimeout(pointerDebounce);
-      supabase.removeChannel(channel);
-    };
-  }, [fetchAll, teamId]);
+    return () => { supabase.removeChannel(channel); };
+  }, [fetchAll]);
 
   const myPresence = presenceList.find(p => p.user_id === user?.id);
   const myChannel = channels.find(c => c.id === myPresence?.channel_id);
@@ -147,11 +111,9 @@ export function useQueue() {
       await setOPStatus(!myPresence.is_op);
       // Save channel ID so refresh puts us back in the right room
       if (!myPresence.is_op) {
-        // Becoming OP — find the OP channel
         const opChannel = channels.find(c => c.name === 'op');
         if (opChannel) saveLastChannelId(opChannel.id);
       } else {
-        // Leaving OP — go back to ready
         const readyCh = channels.find(c => c.name === 'ready');
         if (readyCh) saveLastChannelId(readyCh.id);
       }
