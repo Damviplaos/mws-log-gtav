@@ -1,5 +1,6 @@
 import { supabase } from '@/db/supabase';
 import type { Channel, PresenceWithProfile, QueuePointer } from '@/types/types';
+import { getMigrationStatus } from '@/lib/migrationStatus';
 
 // =============================================
 // Presence API
@@ -416,6 +417,8 @@ export async function randomSelectOP(readyChannelId: string) {
 // =============================================
 
 export async function moveUserToChannel(targetUserId: string, channelId: string) {
+  const status = await getMigrationStatus();
+
   try {
     const { data, error } = await supabase.functions.invoke('manage-presence', {
       body: { action: 'move_user', target_user_id: targetUserId, channel_id: channelId },
@@ -424,7 +427,6 @@ export async function moveUserToChannel(targetUserId: string, channelId: string)
     if (error) {
       const msg = await error?.context?.text?.();
       const errText = msg || error.message || '';
-      // 403 = permission denied, don't silently swallow
       if (error.context?.status === 403 || errText.includes('403') || errText.includes('สิทธิ์')) {
         throw new Error(errText || 'ไม่มีสิทธิ์ย้ายผู้ใช้');
       }
@@ -433,7 +435,6 @@ export async function moveUserToChannel(targetUserId: string, channelId: string)
     if (data?.error) throw new Error(data.error);
     return;
   } catch (e) {
-    // If it's a permission error, re-throw
     if (e instanceof Error && (e.message.includes('สิทธิ์') || e.message.includes('403'))) {
       throw e;
     }
@@ -441,12 +442,14 @@ export async function moveUserToChannel(targetUserId: string, channelId: string)
   }
 
   // Level 2: RPC (SECURITY DEFINER — bypasses RLS)
-  const { error: rpcErr } = await supabase.rpc('admin_move_user', {
-    p_target_user_id: targetUserId,
-    p_channel_id: channelId,
-  });
-  if (!rpcErr) return;
-  console.error('admin_move_user RPC fallback error:', rpcErr);
+  if (status.hasAdminMoveRPC) {
+    const { error: rpcErr } = await supabase.rpc('admin_move_user', {
+      p_target_user_id: targetUserId,
+      p_channel_id: channelId,
+    });
+    if (!rpcErr) return;
+    console.error('admin_move_user RPC fallback error:', rpcErr);
+  }
 
   // Level 3: Direct DB (only works if RLS allows it, e.g. super_admin)
   const { error: closeErr } = await supabase
@@ -460,7 +463,12 @@ export async function moveUserToChannel(targetUserId: string, channelId: string)
     .from('user_presence')
     .update({ channel_id: channelId, joined_channel_at: new Date().toISOString() })
     .eq('user_id', targetUserId);
-  if (moveErr) throw moveErr;
+  if (moveErr) {
+    if (moveErr.code === '42501' || moveErr.message?.includes('permission') || moveErr.message?.includes('policy')) {
+      throw new Error('ไม่มีสิทธิ์ย้ายผู้ใช้ — ต้องมีสิทธิ์ move_player หรือ super_admin');
+    }
+    throw moveErr;
+  }
 
   const { data: ch } = await supabase
     .from('channels')
@@ -478,6 +486,8 @@ export async function moveUserToChannel(targetUserId: string, channelId: string)
 }
 
 export async function setOPStatusForUser(targetUserId: string, isOp: boolean) {
+  const status = await getMigrationStatus();
+
   try {
     const { data, error } = await supabase.functions.invoke('manage-presence', {
       body: { action: 'set_op_others', target_user_id: targetUserId, is_op: isOp },
@@ -501,12 +511,14 @@ export async function setOPStatusForUser(targetUserId: string, isOp: boolean) {
   }
 
   // Level 2: RPC (SECURITY DEFINER — bypasses RLS)
-  const { error: rpcErr } = await supabase.rpc('admin_set_op', {
-    p_target_user_id: targetUserId,
-    p_is_op: isOp,
-  });
-  if (!rpcErr) return;
-  console.error('admin_set_op RPC fallback error:', rpcErr);
+  if (status.hasAdminSetOpRPC) {
+    const { error: rpcErr } = await supabase.rpc('admin_set_op', {
+      p_target_user_id: targetUserId,
+      p_is_op: isOp,
+    });
+    if (!rpcErr) return;
+    console.error('admin_set_op RPC fallback error:', rpcErr);
+  }
 
   // Level 3: Direct DB (only works if RLS allows it, e.g. super_admin)
   const { error: closeErr } = await supabase
@@ -528,7 +540,12 @@ export async function setOPStatusForUser(targetUserId: string, isOp: boolean) {
     .from('user_presence')
     .update({ is_op: isOp, channel_id: newChannelId, joined_channel_at: new Date().toISOString() })
     .eq('user_id', targetUserId);
-  if (opErr) throw opErr;
+  if (opErr) {
+    if (opErr.code === '42501' || opErr.message?.includes('permission') || opErr.message?.includes('policy')) {
+      throw new Error('ไม่มีสิทธิ์เปลี่ยนสถานะ OP — ต้องมีสิทธิ์ set_op_others หรือ super_admin');
+    }
+    throw opErr;
+  }
 
   if (newChannelId) {
     const { data: ch } = await supabase.from('channels').select('track_time').eq('id', newChannelId).maybeSingle();
@@ -552,6 +569,12 @@ export async function setOPStatusForUser(targetUserId: string, isOp: boolean) {
 // =============================================
 
 export async function pairUsers(partnerUserId: string) {
+  // Check if pairing feature is available
+  const status = await getMigrationStatus();
+  if (!status.hasPairedColumn && !status.hasPairRPC) {
+    throw new Error('ฟีเจอร์จับคู่ยังไม่พร้อมใช้งาน — ต้องอัปเดต database ก่อน');
+  }
+
   try {
     const { data, error } = await supabase.functions.invoke('manage-presence', {
       body: { action: 'pair_users', partner_user_id: partnerUserId },
@@ -571,15 +594,28 @@ export async function pairUsers(partnerUserId: string) {
   if (!user) throw new Error('ไม่ได้เข้าสู่ระบบ');
 
   // Try RPC
-  const { error: rpcErr } = await supabase.rpc('pair_users', { p_user_a: user.id, p_user_b: partnerUserId });
-  if (!rpcErr) return;
+  if (status.hasPairRPC) {
+    const { error: rpcErr } = await supabase.rpc('pair_users', { p_user_a: user.id, p_user_b: partnerUserId });
+    if (!rpcErr) return;
+  }
 
-  // RPC failed — direct DB fallback (update own row, then partner's row)
-  await supabase.from('user_presence').update({ paired_with_user_id: partnerUserId }).eq('user_id', user.id);
-  await supabase.from('user_presence').update({ paired_with_user_id: user.id }).eq('user_id', partnerUserId);
+  // Direct DB fallback (only works if column exists)
+  if (status.hasPairedColumn) {
+    await supabase.from('user_presence').update({ paired_with_user_id: partnerUserId }).eq('user_id', user.id);
+    await supabase.from('user_presence').update({ paired_with_user_id: user.id }).eq('user_id', partnerUserId);
+    return;
+  }
+
+  throw new Error('ฟีเจอร์จับคู่ยังไม่พร้อมใช้งาน');
 }
 
 export async function pairUsersAsAdmin(targetUserId: string, partnerUserId: string) {
+  // Check if pairing feature is available
+  const status = await getMigrationStatus();
+  if (!status.hasPairedColumn && !status.hasPairRPC) {
+    throw new Error('ฟีเจอร์จับคู่ยังไม่พร้อมใช้งาน — ต้องอัปเดต database ก่อน');
+  }
+
   try {
     const { data, error } = await supabase.functions.invoke('manage-presence', {
       body: { action: 'pair_users_admin', target_user_id: targetUserId, partner_user_id: partnerUserId },
@@ -603,15 +639,28 @@ export async function pairUsersAsAdmin(targetUserId: string, partnerUserId: stri
   }
 
   // Try RPC
-  const { error: rpcErr } = await supabase.rpc('pair_users', { p_user_a: targetUserId, p_user_b: partnerUserId });
-  if (!rpcErr) return;
+  if (status.hasPairRPC) {
+    const { error: rpcErr } = await supabase.rpc('pair_users', { p_user_a: targetUserId, p_user_b: partnerUserId });
+    if (!rpcErr) return;
+  }
 
-  // RPC failed — direct DB fallback
-  await supabase.from('user_presence').update({ paired_with_user_id: partnerUserId }).eq('user_id', targetUserId);
-  await supabase.from('user_presence').update({ paired_with_user_id: targetUserId }).eq('user_id', partnerUserId);
+  // Direct DB fallback (only works if column exists)
+  if (status.hasPairedColumn) {
+    await supabase.from('user_presence').update({ paired_with_user_id: partnerUserId }).eq('user_id', targetUserId);
+    await supabase.from('user_presence').update({ paired_with_user_id: targetUserId }).eq('user_id', partnerUserId);
+    return;
+  }
+
+  throw new Error('ฟีเจอร์จับคู่ยังไม่พร้อมใช้งาน');
 }
 
 export async function cancelPair() {
+  const status = await getMigrationStatus();
+  if (!status.hasPairedColumn && !status.hasPairRPC) {
+    // Feature not available — nothing to cancel
+    return;
+  }
+
   try {
     const { data, error } = await supabase.functions.invoke('manage-presence', {
       body: { action: 'cancel_pair' },
@@ -631,14 +680,18 @@ export async function cancelPair() {
   if (!user) return;
 
   // Try RPC
-  const { error: rpcErr } = await supabase.rpc('cancel_pair', { p_user_id: user.id });
-  if (!rpcErr) return;
+  if (status.hasPairRPC) {
+    const { error: rpcErr } = await supabase.rpc('cancel_pair', { p_user_id: user.id });
+    if (!rpcErr) return;
+  }
 
-  // RPC failed — direct DB fallback: find partner then clear both sides
-  const { data: myPresence } = await supabase.from('user_presence').select('paired_with_user_id').eq('user_id', user.id).maybeSingle();
-  const partnerId = myPresence?.paired_with_user_id;
-  await supabase.from('user_presence').update({ paired_with_user_id: null }).eq('user_id', user.id);
-  if (partnerId) {
-    await supabase.from('user_presence').update({ paired_with_user_id: null }).eq('user_id', partnerId);
+  // Direct DB fallback: find partner then clear both sides (only if column exists)
+  if (status.hasPairedColumn) {
+    const { data: myPresence } = await supabase.from('user_presence').select('paired_with_user_id').eq('user_id', user.id).maybeSingle();
+    const partnerId = myPresence?.paired_with_user_id;
+    await supabase.from('user_presence').update({ paired_with_user_id: null }).eq('user_id', user.id);
+    if (partnerId) {
+      await supabase.from('user_presence').update({ paired_with_user_id: null }).eq('user_id', partnerId);
+    }
   }
 }

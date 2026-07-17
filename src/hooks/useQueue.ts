@@ -185,7 +185,8 @@ export function useQueue() {
       // Use setOPStatusForUser to properly move user to OP room
       await setOPStatusForUser(userId, true);
     } catch (err) {
-      toast.error('สุ่ม OP ไม่สำเร็จ');
+      const msg = err instanceof Error ? err.message : 'สุ่ม OP ไม่สำเร็จ';
+      toast.error(msg);
       console.error(err);
     }
   }, [channels]);
