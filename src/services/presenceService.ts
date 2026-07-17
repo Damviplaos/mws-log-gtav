@@ -3,6 +3,23 @@ import type { Channel, PresenceWithProfile, QueuePointer } from '@/types/types';
 import { getMigrationStatus } from '@/lib/migrationStatus';
 
 // =============================================
+// Helper: detect if edge function is NOT deployed (404 / not found)
+// =============================================
+function isNotDeployedError(e: unknown): boolean {
+  if (!e) return false;
+  const msg = String(e).toLowerCase();
+  // 404, not found, function not deployed, network errors
+  return msg.includes('not_found') || msg.includes('not found') || msg.includes('404');
+}
+
+function isEdgeFnNotDeployed(error: { context?: { status?: number }; message?: string } | null): boolean {
+  if (!error) return false;
+  if (error.context?.status === 404) return true;
+  const msg = (error.message || '').toLowerCase();
+  return msg.includes('not_found') || msg.includes('not found');
+}
+
+// =============================================
 // Presence API
 // =============================================
 
@@ -34,11 +51,13 @@ export async function joinPresence(channelId?: string) {
       method: 'POST',
     });
     if (error) {
+      if (isEdgeFnNotDeployed(error)) throw error; // fall through below
       const msg = await error?.context?.text?.();
       throw new Error(msg || error.message);
     }
     return data;
-  } catch (_e) {
+  } catch (e) {
+    if (!isNotDeployedError(e)) throw e; // re-throw real errors (auth, db, etc.)
     // Edge function not deployed — fall back to direct DB
   }
 
@@ -93,11 +112,13 @@ export async function leavePresence() {
       method: 'POST',
     });
     if (error) {
+      if (isEdgeFnNotDeployed(error)) throw error;
       const msg = await error?.context?.text?.();
       throw new Error(msg || error.message);
     }
     return data;
-  } catch (_e) {
+  } catch (e) {
+    if (!isNotDeployedError(e)) throw e;
     // Edge function not deployed — fall back to direct DB
   }
 
@@ -114,13 +135,18 @@ export async function leavePresence() {
 }
 
 export async function sendHeartbeat() {
-  const { error } = await supabase.functions.invoke('manage-presence', {
-    body: { action: 'heartbeat' },
-    method: 'POST',
-  });
-  if (error) {
-    const msg = await error?.context?.text?.();
-    console.error('Heartbeat error:', msg || error.message);
+  try {
+    const { error } = await supabase.functions.invoke('manage-presence', {
+      body: { action: 'heartbeat' },
+      method: 'POST',
+    });
+    if (error) {
+      if (isEdgeFnNotDeployed(error)) return; // silently skip
+      const msg = await error?.context?.text?.();
+      console.error('Heartbeat error:', msg || error.message);
+    }
+  } catch (e) {
+    if (!isNotDeployedError(e)) console.error('Heartbeat failed:', e);
   }
 }
 
@@ -131,11 +157,13 @@ export async function setOPStatus(isOp: boolean) {
       method: 'POST',
     });
     if (error) {
+      if (isEdgeFnNotDeployed(error)) throw error;
       const msg = await error?.context?.text?.();
       throw new Error(msg || error.message);
     }
     return data;
-  } catch (_e) {
+  } catch (e) {
+    if (!isNotDeployedError(e)) throw e;
     // Edge function not deployed — fall back to direct DB
   }
 
@@ -186,12 +214,14 @@ export async function switchChannel(channelId: string) {
       method: 'POST',
     });
     if (error) {
+      if (isEdgeFnNotDeployed(error)) throw error;
       const msg = await error?.context?.text?.();
       throw new Error(msg || error.message);
     }
     saveLastChannelId(channelId);
     return data;
-  } catch (_e) {
+  } catch (e) {
+    if (!isNotDeployedError(e)) throw e;
     // Edge function not deployed — fall back to direct DB
   }
 
@@ -278,13 +308,15 @@ export async function deleteChannel(channelId: string) {
       method: 'POST',
     });
     if (error) {
+      if (isEdgeFnNotDeployed(error)) throw error;
       const msg = await error?.context?.text?.();
       throw new Error(msg || error.message);
     }
     if (data?.error) throw new Error(data.error);
     return;
-  } catch (_edgeFnError) {
-    // Edge function failed — fall back to direct Supabase delete
+  } catch (e) {
+    if (!isNotDeployedError(e)) throw e;
+    // Edge function not deployed — fall back to direct delete
   }
 
   const { data: otherChannels } = await supabase
@@ -417,14 +449,13 @@ export async function randomSelectOP(readyChannelId: string) {
 // =============================================
 
 export async function moveUserToChannel(targetUserId: string, channelId: string) {
-  const status = await getMigrationStatus();
-
   try {
     const { data, error } = await supabase.functions.invoke('manage-presence', {
       body: { action: 'move_user', target_user_id: targetUserId, channel_id: channelId },
       method: 'POST',
     });
     if (error) {
+      if (isEdgeFnNotDeployed(error)) throw error;
       const msg = await error?.context?.text?.();
       const errText = msg || error.message || '';
       if (error.context?.status === 403 || errText.includes('403') || errText.includes('สิทธิ์')) {
@@ -435,13 +466,12 @@ export async function moveUserToChannel(targetUserId: string, channelId: string)
     if (data?.error) throw new Error(data.error);
     return;
   } catch (e) {
-    if (e instanceof Error && (e.message.includes('สิทธิ์') || e.message.includes('403'))) {
-      throw e;
-    }
+    if (!isNotDeployedError(e)) throw e;
     // Edge function not deployed — try RPC
   }
 
   // Level 2: RPC (SECURITY DEFINER — bypasses RLS)
+  const status = await getMigrationStatus();
   if (status.hasAdminMoveRPC) {
     const { error: rpcErr } = await supabase.rpc('admin_move_user', {
       p_target_user_id: targetUserId,
@@ -486,14 +516,13 @@ export async function moveUserToChannel(targetUserId: string, channelId: string)
 }
 
 export async function setOPStatusForUser(targetUserId: string, isOp: boolean) {
-  const status = await getMigrationStatus();
-
   try {
     const { data, error } = await supabase.functions.invoke('manage-presence', {
       body: { action: 'set_op_others', target_user_id: targetUserId, is_op: isOp },
       method: 'POST',
     });
     if (error) {
+      if (isEdgeFnNotDeployed(error)) throw error;
       const msg = await error?.context?.text?.();
       const errText = msg || error.message || '';
       if (error.context?.status === 403 || errText.includes('403') || errText.includes('สิทธิ์')) {
@@ -504,13 +533,12 @@ export async function setOPStatusForUser(targetUserId: string, isOp: boolean) {
     if (data?.error) throw new Error(data.error);
     return;
   } catch (e) {
-    if (e instanceof Error && (e.message.includes('สิทธิ์') || e.message.includes('403'))) {
-      throw e;
-    }
+    if (!isNotDeployedError(e)) throw e;
     // Edge function not deployed — try RPC
   }
 
   // Level 2: RPC (SECURITY DEFINER — bypasses RLS)
+  const status = await getMigrationStatus();
   if (status.hasAdminSetOpRPC) {
     const { error: rpcErr } = await supabase.rpc('admin_set_op', {
       p_target_user_id: targetUserId,
@@ -569,29 +597,29 @@ export async function setOPStatusForUser(targetUserId: string, isOp: boolean) {
 // =============================================
 
 export async function pairUsers(partnerUserId: string) {
-  // Check if pairing feature is available
-  const status = await getMigrationStatus();
-  if (!status.hasPairedColumn && !status.hasPairRPC) {
-    throw new Error('ฟีเจอร์จับคู่ยังไม่พร้อมใช้งาน — ต้องอัปเดต database ก่อน');
-  }
-
   try {
     const { data, error } = await supabase.functions.invoke('manage-presence', {
       body: { action: 'pair_users', partner_user_id: partnerUserId },
       method: 'POST',
     });
     if (error) {
+      if (isEdgeFnNotDeployed(error)) throw error;
       const msg = await error?.context?.text?.();
-      throw new Error(msg || error.message);
+      const errText = msg || error.message || '';
+      // 500 from edge function = RPC inside function failed
+      throw new Error(errText || 'จับคู่ไม่สำเร็จ — ต้องอัปเดต database migration');
     }
     if (data?.error) throw new Error(data.error);
     return;
-  } catch (_e) {
-    // Edge function not deployed or failed — fall back
+  } catch (e) {
+    if (!isNotDeployedError(e)) throw e;
+    // Edge function not deployed — try RPC fallback
   }
 
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('ไม่ได้เข้าสู่ระบบ');
+
+  const status = await getMigrationStatus();
 
   // Try RPC
   if (status.hasPairRPC) {
@@ -606,37 +634,32 @@ export async function pairUsers(partnerUserId: string) {
     return;
   }
 
-  throw new Error('ฟีเจอร์จับคู่ยังไม่พร้อมใช้งาน');
+  throw new Error('ฟีเจอร์จับคู่ยังไม่พร้อมใช้งาน — ต้องอัปเดต database ก่อน');
 }
 
 export async function pairUsersAsAdmin(targetUserId: string, partnerUserId: string) {
-  // Check if pairing feature is available
-  const status = await getMigrationStatus();
-  if (!status.hasPairedColumn && !status.hasPairRPC) {
-    throw new Error('ฟีเจอร์จับคู่ยังไม่พร้อมใช้งาน — ต้องอัปเดต database ก่อน');
-  }
-
   try {
     const { data, error } = await supabase.functions.invoke('manage-presence', {
       body: { action: 'pair_users_admin', target_user_id: targetUserId, partner_user_id: partnerUserId },
       method: 'POST',
     });
     if (error) {
+      if (isEdgeFnNotDeployed(error)) throw error;
       const msg = await error?.context?.text?.();
       const errText = msg || error.message || '';
       if (error.context?.status === 403 || errText.includes('403') || errText.includes('สิทธิ์')) {
         throw new Error(errText || 'ไม่มีสิทธิ์จับคู่ให้ผู้อื่น');
       }
-      throw new Error(errText);
+      throw new Error(errText || 'จับคู่ไม่สำเร็จ — ต้องอัปเดต database migration');
     }
     if (data?.error) throw new Error(data.error);
     return;
   } catch (e) {
-    if (e instanceof Error && (e.message.includes('สิทธิ์') || e.message.includes('403'))) {
-      throw e;
-    }
-    // Edge function not deployed or failed — fall back
+    if (!isNotDeployedError(e)) throw e;
+    // Edge function not deployed — try RPC fallback
   }
+
+  const status = await getMigrationStatus();
 
   // Try RPC
   if (status.hasPairRPC) {
@@ -651,33 +674,31 @@ export async function pairUsersAsAdmin(targetUserId: string, partnerUserId: stri
     return;
   }
 
-  throw new Error('ฟีเจอร์จับคู่ยังไม่พร้อมใช้งาน');
+  throw new Error('ฟีเจอร์จับคู่ยังไม่พร้อมใช้งาน — ต้องอัปเดต database ก่อน');
 }
 
 export async function cancelPair() {
-  const status = await getMigrationStatus();
-  if (!status.hasPairedColumn && !status.hasPairRPC) {
-    // Feature not available — nothing to cancel
-    return;
-  }
-
   try {
     const { data, error } = await supabase.functions.invoke('manage-presence', {
       body: { action: 'cancel_pair' },
       method: 'POST',
     });
     if (error) {
+      if (isEdgeFnNotDeployed(error)) throw error;
       const msg = await error?.context?.text?.();
-      throw new Error(msg || error.message);
+      throw new Error(msg || error.message || 'ยกเลิกจับคู่ไม่สำเร็จ');
     }
     if (data?.error) throw new Error(data.error);
     return;
-  } catch (_e) {
-    // Edge function not deployed or failed — fall back
+  } catch (e) {
+    if (!isNotDeployedError(e)) throw e;
+    // Edge function not deployed — try RPC fallback
   }
 
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return;
+
+  const status = await getMigrationStatus();
 
   // Try RPC
   if (status.hasPairRPC) {
