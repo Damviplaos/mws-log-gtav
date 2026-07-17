@@ -135,14 +135,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!cancelled) setLoading(false);
       });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (cancelled) return;
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        await loadUserData(session.user.id);
-      } else {
+
+      // Only clear profile on actual sign-out, NOT on token refresh (session briefly null)
+      if (event === 'SIGNED_OUT') {
+        setUser(null);
         setProfile(null);
         setPermissions([]);
+        return;
+      }
+
+      if (session?.user) {
+        setUser(session.user);
+        await loadUserData(session.user.id);
       }
     });
 

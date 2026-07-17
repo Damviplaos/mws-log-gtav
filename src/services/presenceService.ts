@@ -6,6 +6,27 @@ import type { Channel, PresenceWithProfile, QueuePointer } from '@/types/types';
 // =============================================
 
 export async function joinPresence(channelId?: string) {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('ไม่ได้เข้าสู่ระบบ');
+
+  // Check if user already has active presence — ALWAYS preserve their position
+  const { data: existing } = await supabase
+    .from('user_presence')
+    .select('channel_id, is_op')
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  if (existing) {
+    // User already online — just update heartbeat, don't move them
+    saveLastChannelId(existing.channel_id);
+    await supabase
+      .from('user_presence')
+      .update({ last_heartbeat: new Date().toISOString() })
+      .eq('user_id', user.id);
+    return existing;
+  }
+
+  // No existing presence — try edge function first
   try {
     const { data, error } = await supabase.functions.invoke('manage-presence', {
       body: { action: 'join', channel_id: channelId ?? null },
@@ -18,28 +39,6 @@ export async function joinPresence(channelId?: string) {
     return data;
   } catch (_e) {
     // Edge function not deployed — fall back to direct DB
-  }
-
-  // Fallback: direct join
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('ไม่ได้เข้าสู่ระบบ');
-
-  // Check if user already has an active presence — preserve their position
-  const { data: existing } = await supabase
-    .from('user_presence')
-    .select('channel_id, is_op')
-    .eq('user_id', user.id)
-    .maybeSingle();
-
-  if (existing) {
-    // User already online — just update heartbeat, don't move them
-    // Also save their current channel so refresh puts them back here
-    saveLastChannelId(existing.channel_id);
-    await supabase
-      .from('user_presence')
-      .update({ last_heartbeat: new Date().toISOString() })
-      .eq('user_id', user.id);
-    return existing;
   }
 
   let targetChannelId = channelId;
@@ -125,15 +124,48 @@ export async function sendHeartbeat() {
 }
 
 export async function setOPStatus(isOp: boolean) {
-  const { data, error } = await supabase.functions.invoke('manage-presence', {
-    body: { action: 'set_op', is_op: isOp },
-    method: 'POST',
-  });
-  if (error) {
-    const msg = await error?.context?.text?.();
-    throw new Error(msg || error.message);
+  try {
+    const { data, error } = await supabase.functions.invoke('manage-presence', {
+      body: { action: 'set_op', is_op: isOp },
+      method: 'POST',
+    });
+    if (error) {
+      const msg = await error?.context?.text?.();
+      throw new Error(msg || error.message);
+    }
+    return data;
+  } catch (_e) {
+    // Edge function not deployed — fall back to direct DB
   }
-  return data;
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('ไม่ได้เข้าสู่ระบบ');
+
+  // Close any open time log
+  await supabase.from('time_logs').update({ ended_at: new Date().toISOString() }).eq('user_id', user.id).is('ended_at', null);
+
+  // Find OP/ready channels
+  const { data: opCh } = await supabase.from('channels').select('id').eq('name', 'op').maybeSingle();
+  const { data: readyCh } = await supabase.from('channels').select('id').eq('name', 'ready').maybeSingle();
+
+  const { data: tp } = await supabase.from('user_presence').select('channel_id').eq('user_id', user.id).maybeSingle();
+  let newChannelId = tp?.channel_id;
+  if (isOp && opCh) newChannelId = opCh.id;
+  else if (!isOp && readyCh) newChannelId = readyCh.id;
+
+  const { error: opErr } = await supabase
+    .from('user_presence')
+    .update({ is_op: isOp, channel_id: newChannelId, joined_channel_at: new Date().toISOString() })
+    .eq('user_id', user.id);
+  if (opErr) throw opErr;
+
+  if (newChannelId) {
+    saveLastChannelId(newChannelId);
+    const { data: ch } = await supabase.from('channels').select('track_time').eq('id', newChannelId).maybeSingle();
+    if (ch?.track_time) {
+      await supabase.from('time_logs').insert({ user_id: user.id, channel_id: newChannelId, started_at: new Date().toISOString(), is_op_time: isOp });
+    }
+  }
 }
 
 const LAST_CHANNEL_KEY = 'medic:last_channel_id';
@@ -147,16 +179,47 @@ export function getLastChannelId(): string | null {
 }
 
 export async function switchChannel(channelId: string) {
-  const { data, error } = await supabase.functions.invoke('manage-presence', {
-    body: { action: 'join', channel_id: channelId },
-    method: 'POST',
-  });
-  if (error) {
-    const msg = await error?.context?.text?.();
-    throw new Error(msg || error.message);
+  try {
+    const { data, error } = await supabase.functions.invoke('manage-presence', {
+      body: { action: 'join', channel_id: channelId },
+      method: 'POST',
+    });
+    if (error) {
+      const msg = await error?.context?.text?.();
+      throw new Error(msg || error.message);
+    }
+    saveLastChannelId(channelId);
+    return data;
+  } catch (_e) {
+    // Edge function not deployed — fall back to direct DB
   }
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('ไม่ได้เข้าสู่ระบบ');
+
+  // Close any open time log
+  await supabase.from('time_logs').update({ ended_at: new Date().toISOString() }).eq('user_id', user.id).is('ended_at', null);
+
+  const { data: existing } = await supabase.from('user_presence').select('id').eq('user_id', user.id).maybeSingle();
+
+  if (existing) {
+    const { error: updateErr } = await supabase
+      .from('user_presence')
+      .update({ channel_id: channelId, joined_channel_at: new Date().toISOString() })
+      .eq('user_id', user.id);
+    if (updateErr) throw updateErr;
+  } else {
+    const { error: insertErr } = await supabase
+      .from('user_presence')
+      .insert({ user_id: user.id, channel_id: channelId, is_op: false, joined_channel_at: new Date().toISOString(), last_heartbeat: new Date().toISOString() });
+    if (insertErr) throw insertErr;
+  }
+
   saveLastChannelId(channelId);
-  return data;
+  const { data: ch } = await supabase.from('channels').select('track_time').eq('id', channelId).maybeSingle();
+  if (ch?.track_time) {
+    await supabase.from('time_logs').insert({ user_id: user.id, channel_id: channelId, started_at: new Date().toISOString(), is_op_time: false });
+  }
 }
 
 // =============================================
