@@ -11,14 +11,13 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
-import { ChevronRight, Shuffle, ArrowRight, Star, UserCheck, X, ArrowLeftRight, Shield, AlertTriangle } from 'lucide-react';
+import { ChevronRight, Shuffle, ArrowRight, Star, UserCheck, X, ArrowLeftRight, Shield } from 'lucide-react';
 import type { PresenceWithProfile, Channel } from '@/types/types';
 import { getUserRoles } from '@/services/adminService';
 import { moveUserToChannel, setOPStatusForUser, pairUsersAsAdmin } from '@/services/presenceService';
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import type { JSX } from 'react';
 import type { Role } from '@/types/types';
-import { getMigrationStatus, type MigrationStatus } from '@/lib/migrationStatus';
 
 // =============================================
 // Role badges — batch-fetched for all users
@@ -118,7 +117,6 @@ interface UserRowProps {
   channels: Channel[];
   allPresences: PresenceWithProfile[];
   myPairUserId: string | null;
-  pairingAvailable: boolean;
   onSwitchChannel: (channelId: string) => void;
   onStartPairing: () => void;
   onCancelPair: () => void;
@@ -133,7 +131,7 @@ interface UserRowProps {
 
 function UserRow({
   presence, isPointed, isMe, channels, allPresences,
-  myPairUserId, pairingAvailable, onSwitchChannel, onStartPairing, onCancelPair,
+  myPairUserId, onSwitchChannel, onStartPairing, onCancelPair,
   onMoveUser, onToggleOPUser, onAdminPair, canMoveOthers, canToggleOPOthers, canPairOthers, roleCache,
 }: UserRowProps) {
   const displayName = presence.profile?.nickname || presence.profile?.ic_name || presence.profile?.username || '?';
@@ -190,19 +188,19 @@ function UserRow({
               </DropdownMenuItem>
             ))}
             <DropdownMenuSeparator />
-            {/* Pairing options — only if pairing feature is available */}
-            {isPaired && pairingAvailable ? (
+            {/* Pairing options */}
+            {isPaired ? (
               <DropdownMenuItem
                 onClick={onCancelPair}
                 className="text-destructive focus:text-destructive"
               >
                 <X className="w-3.5 h-3.5 mr-2" /> ยกเลิกจับคู่
               </DropdownMenuItem>
-            ) : pairingAvailable ? (
+            ) : (
               <DropdownMenuItem onClick={onStartPairing} disabled={allPresences.filter(p => p.user_id !== presence.user_id).length === 0}>
                 <UserCheck className="w-3.5 h-3.5 mr-2" /> จับคู่กับ...
               </DropdownMenuItem>
-            ) : null}
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       )}
@@ -323,7 +321,6 @@ interface ChannelSectionProps {
   channels: Channel[];
   allPresences: PresenceWithProfile[];
   myPairUserId: string | null;
-  pairingAvailable: boolean;
   onSwitchChannel: (channelId: string) => void;
   onStartPairing: () => void;
   onCancelPair: () => void;
@@ -338,7 +335,7 @@ interface ChannelSectionProps {
 
 function ChannelSection({
   channel, presences, pointedUserId, myUserId, isReadyChannel, channels, allPresences,
-  myPairUserId, pairingAvailable, onSwitchChannel, onStartPairing, onCancelPair,
+  myPairUserId, onSwitchChannel, onStartPairing, onCancelPair,
   onMoveUser, onToggleOPUser, onAdminPair, canMoveOthers, canToggleOPOthers, canPairOthers, roleCache,
 }: ChannelSectionProps) {
   // Build rendered rows — merge ALL paired users into one row when both are in this channel
@@ -387,7 +384,6 @@ function ChannelSection({
           channels={channels}
           allPresences={allPresences}
           myPairUserId={myPairUserId}
-          pairingAvailable={pairingAvailable}
           onSwitchChannel={onSwitchChannel}
           onStartPairing={onStartPairing}
           onCancelPair={onCancelPair}
@@ -516,12 +512,6 @@ export default function QueuePage() {
   const [adminPairTarget, setAdminPairTarget] = useState<string | null>(null);
   const [adminPairPartnerPickerOpen, setAdminPairPartnerPickerOpen] = useState(false);
 
-  // ── Migration status detection ────────────────────────────────────
-  const [migrationStatus, setMigrationStatus] = useState<MigrationStatus | null>(null);
-  useEffect(() => {
-    getMigrationStatus().then(setMigrationStatus);
-  }, []);
-
   const myPairUserId = myPresence?.paired_with_user_id ?? null;
 
   // Batch-fetch roles for all visible users (eliminates N+1 queries)
@@ -570,13 +560,10 @@ export default function QueuePage() {
     toast.info('ยกเลิกการจับคู่แล้ว');
   };
 
-  // ── Per-action permissions (super_admin/admin always get everything via RLS) ─────
-  // For non-admin users with permissions, need RPCs to bypass RLS
-  const isSuperAdmin = profile?.system_role === 'super_admin' || profile?.system_role === 'admin';
-  const canMoveOthers = hasPermission('move_player') && (isSuperAdmin || (migrationStatus?.hasAdminMoveRPC ?? false));
-  const canToggleOPOthers = hasPermission('set_op_others') && (isSuperAdmin || (migrationStatus?.hasAdminSetOpRPC ?? false));
-  const canPairOthers = hasPermission('admin_pair_others') && (migrationStatus?.hasPairedColumn ?? false);
-  const pairingAvailable = migrationStatus?.hasPairedColumn ?? false;
+  // ── Per-action permissions ─────
+  const canMoveOthers = hasPermission('move_player');
+  const canToggleOPOthers = hasPermission('set_op_others');
+  const canPairOthers = hasPermission('admin_pair_others');
 
   const handleMoveUser = useCallback(async (targetUserId: string, channelId: string) => {
     try {
@@ -639,27 +626,8 @@ export default function QueuePage() {
 
   const readyChannel = channels.find(c => c.name === 'ready');
 
-  // Determine missing features for banner
-  const missingFeatures: string[] = [];
-  if (migrationStatus && !migrationStatus.hasPairedColumn) missingFeatures.push('จับคู่');
-  if (migrationStatus && !migrationStatus.hasAdminMoveRPC && !migrationStatus.hasAdminSetOpRPC && !isSuperAdmin) {
-    missingFeatures.push('ย้ายผู้ใช้ / ตั้ง OP ให้ผู้อื่น');
-  }
-
   return (
     <div className="p-3 md:p-4 max-w-2xl mx-auto">
-      {/* Migration status banner */}
-      {migrationStatus && missingFeatures.length > 0 && (
-        <div className="flex items-start gap-2 mb-3 px-3 py-2 rounded-sm border border-warning/30 bg-warning/5 text-sm text-warning">
-          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-          <div>
-            <p className="font-semibold text-xs">ฟีเจอร์บางอย่างยังไม่พร้อมใช้งาน</p>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              {missingFeatures.join(', ')} — ต้องอัปเดต database migration ก่อน ถึงจะใช้ได้
-            </p>
-          </div>
-        </div>
-      )}
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div>
@@ -717,7 +685,6 @@ export default function QueuePage() {
               channels={channels}
               allPresences={presenceList}
               myPairUserId={myPairUserId}
-              pairingAvailable={pairingAvailable}
               onSwitchChannel={(cid) => {
                 handleSwitchChannel(cid);
                 toast.success(`ย้ายไป ${channels.find(c => c.id === cid)?.display_name || ''}`);
