@@ -100,18 +100,32 @@ export function useQueue() {
     return () => window.removeEventListener('beforeunload', handler);
   }, []);
 
-  // Realtime subscriptions
+  // Realtime subscriptions — debounced to prevent storms
   useEffect(() => {
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const debouncedFetchAll = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => { fetchAll(); }, 400);
+    };
+    let pointerDebounce: ReturnType<typeof setTimeout> | null = null;
+    const debouncedPointer = () => {
+      if (pointerDebounce) clearTimeout(pointerDebounce);
+      pointerDebounce = setTimeout(() => {
+        getQueuePointer(teamId).then(p => setPointer(p));
+      }, 400);
+    };
+
     const channel = supabase
       .channel('queue-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'user_presence' }, () => fetchAll())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'queue_pointer' }, () => {
-        getQueuePointer(teamId).then(p => setPointer(p));
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => fetchAll())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'user_presence' }, debouncedFetchAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'queue_pointer' }, debouncedPointer)
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      if (pointerDebounce) clearTimeout(pointerDebounce);
+      supabase.removeChannel(channel);
+    };
   }, [fetchAll, teamId]);
 
   const myPresence = presenceList.find(p => p.user_id === user?.id);

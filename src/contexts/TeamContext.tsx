@@ -77,8 +77,6 @@ export function TeamProvider({ children }: { children: ReactNode }) {
     if (team) {
       setCurrentTeam(team);
       toast.success(`สลับไปทีม "${team.name}" แล้ว`);
-      // Reload page to refresh all data
-      window.location.reload();
     }
   }, [teams]);
 

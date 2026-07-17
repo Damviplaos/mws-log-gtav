@@ -15,18 +15,35 @@ import { ChevronRight, Shuffle, ArrowRight, Star, UserCheck, X, ArrowLeftRight, 
 import type { PresenceWithProfile, Channel } from '@/types/types';
 import { getUserRoles } from '@/services/adminService';
 import { moveUserToChannel, setOPStatusForUser, pairUsersAsAdmin } from '@/services/presenceService';
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import type { JSX } from 'react';
 import type { Role } from '@/types/types';
 
 // =============================================
-// Role badge for a user
+// Role badges — batch-fetched for all users
 // =============================================
-function UserRolesBadges({ userId }: { userId: string }) {
-  const [roles, setRoles] = useState<Role[]>([]);
+function useRoleCache(userIds: string[]): Map<string, Role[]> {
+  const [cache, setCache] = useState<Map<string, Role[]>>(new Map());
   useEffect(() => {
-    getUserRoles(userId).then(ur => setRoles(ur.map(u => u.role!).filter(Boolean)));
-  }, [userId]);
+    const missing = userIds.filter(id => !cache.has(id));
+    if (missing.length === 0) return;
+    let cancelled = false;
+    Promise.all(missing.map(id => getUserRoles(id).then(ur => ({ id, roles: ur.map(u => u.role!).filter(Boolean) }))))
+      .then(results => {
+        if (cancelled) return;
+        setCache(prev => {
+          const next = new Map(prev);
+          results.forEach(r => next.set(r.id, r.roles));
+          return next;
+        });
+      });
+    return () => { cancelled = true; };
+  }, [userIds.join(','), cache]);
+  return cache;
+}
+
+function UserRolesBadges({ userId, roleCache }: { userId: string; roleCache: Map<string, Role[]> }) {
+  const roles = roleCache.get(userId) ?? [];
   if (!roles.length) return null;
   return (
     <span className="flex items-center gap-1 flex-wrap">
@@ -109,12 +126,13 @@ interface UserRowProps {
   canMoveOthers?: boolean;
   canToggleOPOthers?: boolean;
   canPairOthers?: boolean;
+  roleCache: Map<string, Role[]>;
 }
 
 function UserRow({
   presence, isPointed, isMe, channels, allPresences,
   myPairUserId, onSwitchChannel, onStartPairing, onCancelPair,
-  onMoveUser, onToggleOPUser, onAdminPair, canMoveOthers, canToggleOPOthers, canPairOthers,
+  onMoveUser, onToggleOPUser, onAdminPair, canMoveOthers, canToggleOPOthers, canPairOthers, roleCache,
 }: UserRowProps) {
   const displayName = presence.profile?.nickname || presence.profile?.ic_name || presence.profile?.username || '?';
   // Check pairing from DB-backed paired_with_user_id
@@ -142,7 +160,7 @@ function UserRow({
         {isMe && <span className="ml-1 text-xs text-muted-foreground">(คุณ)</span>}
         {isMyPartner && <span className="ml-1 text-xs text-muted-foreground">[คู่ของคุณ]</span>}
       </span>
-      <UserRolesBadges userId={presence.user_id} />
+      <UserRolesBadges userId={presence.user_id} roleCache={roleCache} />
       {presence.profile?.ic_name && presence.profile.ic_name !== displayName && (
         <span className="text-xs text-muted-foreground hidden md:block truncate max-w-24">
           [{presence.profile.ic_name}]
@@ -312,12 +330,13 @@ interface ChannelSectionProps {
   canMoveOthers?: boolean;
   canToggleOPOthers?: boolean;
   canPairOthers?: boolean;
+  roleCache: Map<string, Role[]>;
 }
 
 function ChannelSection({
   channel, presences, pointedUserId, myUserId, isReadyChannel, channels, allPresences,
   myPairUserId, onSwitchChannel, onStartPairing, onCancelPair,
-  onMoveUser, onToggleOPUser, onAdminPair, canMoveOthers, canToggleOPOthers, canPairOthers,
+  onMoveUser, onToggleOPUser, onAdminPair, canMoveOthers, canToggleOPOthers, canPairOthers, roleCache,
 }: ChannelSectionProps) {
   // Build rendered rows — merge ALL paired users into one row when both are in this channel
   const renderedRows: JSX.Element[] = [];
@@ -374,6 +393,7 @@ function ChannelSection({
           canMoveOthers={canMoveOthers}
           canToggleOPOthers={canToggleOPOthers}
           canPairOthers={canPairOthers}
+          roleCache={roleCache}
         />
       );
     }
@@ -493,6 +513,10 @@ export default function QueuePage() {
   const [adminPairPartnerPickerOpen, setAdminPairPartnerPickerOpen] = useState(false);
 
   const myPairUserId = myPresence?.paired_with_user_id ?? null;
+
+  // Batch-fetch roles for all visible users (eliminates N+1 queries)
+  const allUserIds = useMemo(() => presenceList.map(p => p.user_id), [presenceList]);
+  const roleCache = useRoleCache(allUserIds);
 
   // Track my current channel to detect room moves
   const myChannelIdRef = useRef<string | null>(null);
@@ -673,6 +697,7 @@ export default function QueuePage() {
               canMoveOthers={canMoveOthers}
               canToggleOPOthers={canToggleOPOthers}
               canPairOthers={canPairOthers}
+              roleCache={roleCache}
             />
           ))}
         </div>
