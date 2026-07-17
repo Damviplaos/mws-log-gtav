@@ -1,23 +1,5 @@
 import { supabase } from '@/db/supabase';
 import type { Channel, PresenceWithProfile, QueuePointer } from '@/types/types';
-import { getMigrationStatus } from '@/lib/migrationStatus';
-
-// =============================================
-// Helper: detect if edge function is NOT deployed (404 / not found)
-// =============================================
-function isNotDeployedError(e: unknown): boolean {
-  if (!e) return false;
-  const msg = String(e).toLowerCase();
-  // 404, not found, function not deployed, network errors
-  return msg.includes('not_found') || msg.includes('not found') || msg.includes('404');
-}
-
-function isEdgeFnNotDeployed(error: { context?: { status?: number }; message?: string } | null): boolean {
-  if (!error) return false;
-  if (error.context?.status === 404) return true;
-  const msg = (error.message || '').toLowerCase();
-  return msg.includes('not_found') || msg.includes('not found');
-}
 
 // =============================================
 // Presence API
@@ -27,7 +9,6 @@ export async function joinPresence(channelId?: string) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('ไม่ได้เข้าสู่ระบบ');
 
-  // Check if user already has active presence — ALWAYS preserve their position
   const { data: existing } = await supabase
     .from('user_presence')
     .select('channel_id, is_op')
@@ -35,7 +16,6 @@ export async function joinPresence(channelId?: string) {
     .maybeSingle();
 
   if (existing) {
-    // User already online — just update heartbeat, don't move them
     saveLastChannelId(existing.channel_id);
     await supabase
       .from('user_presence')
@@ -44,21 +24,18 @@ export async function joinPresence(channelId?: string) {
     return existing;
   }
 
-  // No existing presence — try edge function first
   try {
     const { data, error } = await supabase.functions.invoke('manage-presence', {
       body: { action: 'join', channel_id: channelId ?? null },
       method: 'POST',
     });
     if (error) {
-      if (isEdgeFnNotDeployed(error)) throw error; // fall through below
       const msg = await error?.context?.text?.();
       throw new Error(msg || error.message);
     }
     return data;
-  } catch (e) {
-    if (!isNotDeployedError(e)) throw e; // re-throw real errors (auth, db, etc.)
-    // Edge function not deployed — fall back to direct DB
+  } catch {
+    // Fall back to direct DB
   }
 
   let targetChannelId = channelId;
@@ -72,7 +49,6 @@ export async function joinPresence(channelId?: string) {
   }
   if (!targetChannelId) throw new Error('ไม่พบห้องพร้อมทำงาน');
 
-  // Insert new
   const { data: newPresence, error: insertErr } = await supabase
     .from('user_presence')
     .insert({
@@ -87,7 +63,6 @@ export async function joinPresence(channelId?: string) {
     .maybeSingle();
   if (insertErr) throw insertErr;
 
-  // Start time log if channel tracks time
   const { data: ch } = await supabase
     .from('channels')
     .select('track_time')
@@ -112,14 +87,12 @@ export async function leavePresence() {
       method: 'POST',
     });
     if (error) {
-      if (isEdgeFnNotDeployed(error)) throw error;
       const msg = await error?.context?.text?.();
       throw new Error(msg || error.message);
     }
     return data;
-  } catch (e) {
-    if (!isNotDeployedError(e)) throw e;
-    // Edge function not deployed — fall back to direct DB
+  } catch {
+    // Fall back to direct DB
   }
 
   const { data: { user } } = await supabase.auth.getUser();
@@ -141,12 +114,11 @@ export async function sendHeartbeat() {
       method: 'POST',
     });
     if (error) {
-      if (isEdgeFnNotDeployed(error)) return; // silently skip
       const msg = await error?.context?.text?.();
       console.error('Heartbeat error:', msg || error.message);
     }
-  } catch (e) {
-    if (!isNotDeployedError(e)) console.error('Heartbeat failed:', e);
+  } catch {
+    // Silent
   }
 }
 
@@ -157,23 +129,19 @@ export async function setOPStatus(isOp: boolean) {
       method: 'POST',
     });
     if (error) {
-      if (isEdgeFnNotDeployed(error)) throw error;
       const msg = await error?.context?.text?.();
       throw new Error(msg || error.message);
     }
     return data;
-  } catch (e) {
-    if (!isNotDeployedError(e)) throw e;
-    // Edge function not deployed — fall back to direct DB
+  } catch {
+    // Fall back to direct DB
   }
 
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('ไม่ได้เข้าสู่ระบบ');
 
-  // Close any open time log
   await supabase.from('time_logs').update({ ended_at: new Date().toISOString() }).eq('user_id', user.id).is('ended_at', null);
 
-  // Find OP/ready channels
   const { data: opCh } = await supabase.from('channels').select('id').eq('name', 'op').maybeSingle();
   const { data: readyCh } = await supabase.from('channels').select('id').eq('name', 'ready').maybeSingle();
 
@@ -214,21 +182,18 @@ export async function switchChannel(channelId: string) {
       method: 'POST',
     });
     if (error) {
-      if (isEdgeFnNotDeployed(error)) throw error;
       const msg = await error?.context?.text?.();
       throw new Error(msg || error.message);
     }
     saveLastChannelId(channelId);
     return data;
-  } catch (e) {
-    if (!isNotDeployedError(e)) throw e;
-    // Edge function not deployed — fall back to direct DB
+  } catch {
+    // Fall back to direct DB
   }
 
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('ไม่ได้เข้าสู่ระบบ');
 
-  // Close any open time log
   await supabase.from('time_logs').update({ ended_at: new Date().toISOString() }).eq('user_id', user.id).is('ended_at', null);
 
   const { data: existing } = await supabase.from('user_presence').select('id').eq('user_id', user.id).maybeSingle();
@@ -254,7 +219,7 @@ export async function switchChannel(channelId: string) {
 }
 
 // =============================================
-// Channels — fallback to all if team filter returns empty
+// Channels
 // =============================================
 
 export async function getChannels(teamId?: string): Promise<Channel[]> {
@@ -308,15 +273,13 @@ export async function deleteChannel(channelId: string) {
       method: 'POST',
     });
     if (error) {
-      if (isEdgeFnNotDeployed(error)) throw error;
       const msg = await error?.context?.text?.();
       throw new Error(msg || error.message);
     }
     if (data?.error) throw new Error(data.error);
     return;
-  } catch (e) {
-    if (!isNotDeployedError(e)) throw e;
-    // Edge function not deployed — fall back to direct delete
+  } catch {
+    // Fall back to direct delete
   }
 
   const { data: otherChannels } = await supabase
@@ -350,7 +313,7 @@ export async function deleteChannel(channelId: string) {
 }
 
 // =============================================
-// Presence List — fallback to all if team filter returns empty
+// Presence List
 // =============================================
 
 export async function getAllPresence(teamId?: string): Promise<PresenceWithProfile[]> {
@@ -379,7 +342,7 @@ export async function getAllPresence(teamId?: string): Promise<PresenceWithProfi
 }
 
 // =============================================
-// Queue Pointer — fallback to default if team filter returns null
+// Queue Pointer
 // =============================================
 
 export async function getQueuePointer(teamId?: string): Promise<QueuePointer | null> {
@@ -455,33 +418,15 @@ export async function moveUserToChannel(targetUserId: string, channelId: string)
       method: 'POST',
     });
     if (error) {
-      if (isEdgeFnNotDeployed(error)) throw error;
       const msg = await error?.context?.text?.();
-      const errText = msg || error.message || '';
-      if (error.context?.status === 403 || errText.includes('403') || errText.includes('สิทธิ์')) {
-        throw new Error(errText || 'ไม่มีสิทธิ์ย้ายผู้ใช้');
-      }
-      throw new Error(errText);
+      throw new Error(msg || error.message);
     }
     if (data?.error) throw new Error(data.error);
     return;
-  } catch (e) {
-    if (!isNotDeployedError(e)) throw e;
-    // Edge function not deployed — try RPC
+  } catch {
+    // Fall back to direct DB
   }
 
-  // Level 2: RPC (SECURITY DEFINER — bypasses RLS)
-  const status = await getMigrationStatus();
-  if (status.hasAdminMoveRPC) {
-    const { error: rpcErr } = await supabase.rpc('admin_move_user', {
-      p_target_user_id: targetUserId,
-      p_channel_id: channelId,
-    });
-    if (!rpcErr) return;
-    console.error('admin_move_user RPC fallback error:', rpcErr);
-  }
-
-  // Level 3: Direct DB (only works if RLS allows it, e.g. super_admin)
   const { error: closeErr } = await supabase
     .from('time_logs')
     .update({ ended_at: new Date().toISOString() })
@@ -493,12 +438,7 @@ export async function moveUserToChannel(targetUserId: string, channelId: string)
     .from('user_presence')
     .update({ channel_id: channelId, joined_channel_at: new Date().toISOString() })
     .eq('user_id', targetUserId);
-  if (moveErr) {
-    if (moveErr.code === '42501' || moveErr.message?.includes('permission') || moveErr.message?.includes('policy')) {
-      throw new Error('ไม่มีสิทธิ์ย้ายผู้ใช้ — ต้องมีสิทธิ์ move_player หรือ super_admin');
-    }
-    throw moveErr;
-  }
+  if (moveErr) throw moveErr;
 
   const { data: ch } = await supabase
     .from('channels')
@@ -522,33 +462,15 @@ export async function setOPStatusForUser(targetUserId: string, isOp: boolean) {
       method: 'POST',
     });
     if (error) {
-      if (isEdgeFnNotDeployed(error)) throw error;
       const msg = await error?.context?.text?.();
-      const errText = msg || error.message || '';
-      if (error.context?.status === 403 || errText.includes('403') || errText.includes('สิทธิ์')) {
-        throw new Error(errText || 'ไม่มีสิทธิ์เปลี่ยนสถานะ OP');
-      }
-      throw new Error(errText);
+      throw new Error(msg || error.message);
     }
     if (data?.error) throw new Error(data.error);
     return;
-  } catch (e) {
-    if (!isNotDeployedError(e)) throw e;
-    // Edge function not deployed — try RPC
+  } catch {
+    // Fall back to direct DB
   }
 
-  // Level 2: RPC (SECURITY DEFINER — bypasses RLS)
-  const status = await getMigrationStatus();
-  if (status.hasAdminSetOpRPC) {
-    const { error: rpcErr } = await supabase.rpc('admin_set_op', {
-      p_target_user_id: targetUserId,
-      p_is_op: isOp,
-    });
-    if (!rpcErr) return;
-    console.error('admin_set_op RPC fallback error:', rpcErr);
-  }
-
-  // Level 3: Direct DB (only works if RLS allows it, e.g. super_admin)
   const { error: closeErr } = await supabase
     .from('time_logs')
     .update({ ended_at: new Date().toISOString() })
@@ -568,12 +490,7 @@ export async function setOPStatusForUser(targetUserId: string, isOp: boolean) {
     .from('user_presence')
     .update({ is_op: isOp, channel_id: newChannelId, joined_channel_at: new Date().toISOString() })
     .eq('user_id', targetUserId);
-  if (opErr) {
-    if (opErr.code === '42501' || opErr.message?.includes('permission') || opErr.message?.includes('policy')) {
-      throw new Error('ไม่มีสิทธิ์เปลี่ยนสถานะ OP — ต้องมีสิทธิ์ set_op_others หรือ super_admin');
-    }
-    throw opErr;
-  }
+  if (opErr) throw opErr;
 
   if (newChannelId) {
     const { data: ch } = await supabase.from('channels').select('track_time').eq('id', newChannelId).maybeSingle();
@@ -593,7 +510,7 @@ export async function setOPStatusForUser(targetUserId: string, isOp: boolean) {
 }
 
 // =============================================
-// Pairing (DB-backed via RPC)
+// Pairing
 // =============================================
 
 export async function pairUsers(partnerUserId: string) {
@@ -603,38 +520,20 @@ export async function pairUsers(partnerUserId: string) {
       method: 'POST',
     });
     if (error) {
-      if (isEdgeFnNotDeployed(error)) throw error;
       const msg = await error?.context?.text?.();
-      const errText = msg || error.message || '';
-      // 500 from edge function = RPC inside function failed
-      throw new Error(errText || 'จับคู่ไม่สำเร็จ — ต้องอัปเดต database migration');
+      throw new Error(msg || error.message);
     }
     if (data?.error) throw new Error(data.error);
     return;
-  } catch (e) {
-    if (!isNotDeployedError(e)) throw e;
-    // Edge function not deployed — try RPC fallback
+  } catch {
+    // Fall back to direct DB
   }
 
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('ไม่ได้เข้าสู่ระบบ');
 
-  const status = await getMigrationStatus();
-
-  // Try RPC
-  if (status.hasPairRPC) {
-    const { error: rpcErr } = await supabase.rpc('pair_users', { p_user_a: user.id, p_user_b: partnerUserId });
-    if (!rpcErr) return;
-  }
-
-  // Direct DB fallback (only works if column exists)
-  if (status.hasPairedColumn) {
-    await supabase.from('user_presence').update({ paired_with_user_id: partnerUserId }).eq('user_id', user.id);
-    await supabase.from('user_presence').update({ paired_with_user_id: user.id }).eq('user_id', partnerUserId);
-    return;
-  }
-
-  throw new Error('ฟีเจอร์จับคู่ยังไม่พร้อมใช้งาน — ต้องอัปเดต database ก่อน');
+  await supabase.from('user_presence').update({ paired_with_user_id: partnerUserId }).eq('user_id', user.id);
+  await supabase.from('user_presence').update({ paired_with_user_id: user.id }).eq('user_id', partnerUserId);
 }
 
 export async function pairUsersAsAdmin(targetUserId: string, partnerUserId: string) {
@@ -644,37 +543,17 @@ export async function pairUsersAsAdmin(targetUserId: string, partnerUserId: stri
       method: 'POST',
     });
     if (error) {
-      if (isEdgeFnNotDeployed(error)) throw error;
       const msg = await error?.context?.text?.();
-      const errText = msg || error.message || '';
-      if (error.context?.status === 403 || errText.includes('403') || errText.includes('สิทธิ์')) {
-        throw new Error(errText || 'ไม่มีสิทธิ์จับคู่ให้ผู้อื่น');
-      }
-      throw new Error(errText || 'จับคู่ไม่สำเร็จ — ต้องอัปเดต database migration');
+      throw new Error(msg || error.message);
     }
     if (data?.error) throw new Error(data.error);
     return;
-  } catch (e) {
-    if (!isNotDeployedError(e)) throw e;
-    // Edge function not deployed — try RPC fallback
+  } catch {
+    // Fall back to direct DB
   }
 
-  const status = await getMigrationStatus();
-
-  // Try RPC
-  if (status.hasPairRPC) {
-    const { error: rpcErr } = await supabase.rpc('pair_users', { p_user_a: targetUserId, p_user_b: partnerUserId });
-    if (!rpcErr) return;
-  }
-
-  // Direct DB fallback (only works if column exists)
-  if (status.hasPairedColumn) {
-    await supabase.from('user_presence').update({ paired_with_user_id: partnerUserId }).eq('user_id', targetUserId);
-    await supabase.from('user_presence').update({ paired_with_user_id: targetUserId }).eq('user_id', partnerUserId);
-    return;
-  }
-
-  throw new Error('ฟีเจอร์จับคู่ยังไม่พร้อมใช้งาน — ต้องอัปเดต database ก่อน');
+  await supabase.from('user_presence').update({ paired_with_user_id: partnerUserId }).eq('user_id', targetUserId);
+  await supabase.from('user_presence').update({ paired_with_user_id: targetUserId }).eq('user_id', partnerUserId);
 }
 
 export async function cancelPair() {
@@ -684,35 +563,22 @@ export async function cancelPair() {
       method: 'POST',
     });
     if (error) {
-      if (isEdgeFnNotDeployed(error)) throw error;
       const msg = await error?.context?.text?.();
-      throw new Error(msg || error.message || 'ยกเลิกจับคู่ไม่สำเร็จ');
+      throw new Error(msg || error.message);
     }
     if (data?.error) throw new Error(data.error);
     return;
-  } catch (e) {
-    if (!isNotDeployedError(e)) throw e;
-    // Edge function not deployed — try RPC fallback
+  } catch {
+    // Fall back to direct DB
   }
 
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return;
 
-  const status = await getMigrationStatus();
-
-  // Try RPC
-  if (status.hasPairRPC) {
-    const { error: rpcErr } = await supabase.rpc('cancel_pair', { p_user_id: user.id });
-    if (!rpcErr) return;
-  }
-
-  // Direct DB fallback: find partner then clear both sides (only if column exists)
-  if (status.hasPairedColumn) {
-    const { data: myPresence } = await supabase.from('user_presence').select('paired_with_user_id').eq('user_id', user.id).maybeSingle();
-    const partnerId = myPresence?.paired_with_user_id;
-    await supabase.from('user_presence').update({ paired_with_user_id: null }).eq('user_id', user.id);
-    if (partnerId) {
-      await supabase.from('user_presence').update({ paired_with_user_id: null }).eq('user_id', partnerId);
-    }
+  const { data: myPresence } = await supabase.from('user_presence').select('paired_with_user_id').eq('user_id', user.id).maybeSingle();
+  const partnerId = myPresence?.paired_with_user_id;
+  await supabase.from('user_presence').update({ paired_with_user_id: null }).eq('user_id', user.id);
+  if (partnerId) {
+    await supabase.from('user_presence').update({ paired_with_user_id: null }).eq('user_id', partnerId);
   }
 }
